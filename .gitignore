@@ -10,8 +10,13 @@ dist/
 # build.bat temporary file
 version.h.bak
 
-# Personal helper script (commit + push), kept local
+# Personal helper scripts, kept local
 push.bat
+release.bat
+
+# release.bat output and temporary file
+release/
+version.h.prerelease
 
 # Python
 __pycache__/
