@@ -34,6 +34,8 @@ namespace {
 constexpr UINT WM_APP_CALC_DONE = WM_APP + 1;
 constexpr UINT WM_APP_TASK_DONE = WM_APP + 2;   // wParam = algorithm index
 constexpr UINT WM_APP_OPEN_FOLDER = WM_APP + 3; // startup: open the folder window
+constexpr UINT WM_APP_OPEN_REQUEST = WM_APP + 4; // lParam = new std::wstring, from another instance
+constexpr UINT WM_APP_NEXT_FILE = WM_APP + 5;   // hash the next queued file
 constexpr size_t kReadChunkSize = 1 << 20;   // bytes per chunk handed to the hash threads
 constexpr size_t kMaxQueuedChunks = 16;      // per algorithm; bounds memory use
 constexpr int kProgressRange = 1000;
@@ -104,6 +106,8 @@ bool g_rowDone[kHashAlgCount] = {};      // result shown (UI thread only)
 int g_rowPercent[kHashAlgCount] = {};    // percentage currently shown, -1 = none
 std::atomic<bool> g_cancel{ false };
 bool g_userCancelled = false;            // Cancel button pressed (UI thread only)
+HANDLE g_instanceMutex = nullptr;        // held while Single Instance is on
+std::deque<std::wstring> g_pendingFiles; // files sent by other instances while busy
 HFONT g_logoFont = nullptr;
 HFONT g_iconFont = nullptr;
 
@@ -651,11 +655,140 @@ void OnCalculate(HWND dlg)
     RefreshProgress(dlg);   // show 0% right away
 }
 
+// ---------------------------------------------------------------------------
+// Single Instance (Settings menu, off by default). A per-session mutex says a
+// HashCalc window is open; a new GUI launch then hands its file or folder to
+// that window with WM_COPYDATA and exits. The command line is not affected.
+// ---------------------------------------------------------------------------
+const wchar_t kInstanceMutex[] = L"Local\\HashCalc.SingleInstance";
+const wchar_t kInstanceProp[] = L"HashCalc.MainWindow";   // marks our main window
+constexpr ULONG_PTR kCopyDataOpen = 0x48435331;            // 'HCS1'
+constexpr DWORD kMaxCopyDataBytes = 64 * 1024;
+
+// Takes the single-instance mutex. False if another instance already has it.
+bool ClaimSingleInstance()
+{
+    if (g_instanceMutex)
+        return true;
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, kInstanceMutex);
+    if (!mutex)
+        return true;   // cannot tell: just run normally
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        CloseHandle(mutex);
+        return false;
+    }
+    g_instanceMutex = mutex;
+    return true;
+}
+
+void ReleaseSingleInstance()
+{
+    if (g_instanceMutex)
+    {
+        CloseHandle(g_instanceMutex);
+        g_instanceMutex = nullptr;
+    }
+}
+
+BOOL CALLBACK FindInstanceProc(HWND window, LPARAM found)
+{
+    if (!GetPropW(window, kInstanceProp))
+        return TRUE;
+    *reinterpret_cast<HWND*>(found) = window;
+    return FALSE;
+}
+
+// Sends this launch's file/folder (from g_startup) to the running instance.
+// True if it accepted; false means: open a window of our own after all.
+bool ForwardToRunningInstance()
+{
+    HWND target = nullptr;
+    for (int i = 0; i < 40 && !target; ++i)   // it may still be starting: up to 2 s
+    {
+        EnumWindows(FindInstanceProc, reinterpret_cast<LPARAM>(&target));
+        if (!target)
+            Sleep(50);
+    }
+    if (!target)
+        return false;
+
+    // "F<path>" = hash a file, "D<path>" = hash a folder, "" = just show the window
+    std::wstring message = !g_startup.folder.empty() ? L"D" + g_startup.folder
+                         : !g_startup.file.empty()   ? L"F" + g_startup.file
+                         : L"";
+    DWORD pid = 0;
+    GetWindowThreadProcessId(target, &pid);
+    AllowSetForegroundWindow(pid);   // we are in front (just launched); let it come forward
+
+    COPYDATASTRUCT data = { kCopyDataOpen, static_cast<DWORD>((message.size() + 1) * sizeof(wchar_t)),
+                            const_cast<wchar_t*>(message.c_str()) };
+    DWORD_PTR accepted = 0;
+    return SendMessageTimeoutW(target, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data),
+               SMTO_ABORTIFHUNG, 5000, &accepted) && accepted == 1;
+}
+
+// WM_COPYDATA from another instance: check it, then handle it after returning
+// (the sender waits for this call, so nothing slow or modal happens here).
+bool OnCopyData(HWND dlg, const COPYDATASTRUCT* data)
+{
+    if (!data || data->dwData != kCopyDataOpen || !data->lpData || data->cbData < sizeof(wchar_t) ||
+        data->cbData > kMaxCopyDataBytes || data->cbData % sizeof(wchar_t) != 0)
+        return false;
+    std::wstring message(static_cast<const wchar_t*>(data->lpData), data->cbData / sizeof(wchar_t));
+    message.resize(wcsnlen(message.c_str(), message.size()));   // up to the first NUL
+    if (!message.empty() && message[0] != L'F' && message[0] != L'D')
+        return false;
+    PostMessageW(dlg, WM_APP_OPEN_REQUEST, 0, reinterpret_cast<LPARAM>(new std::wstring(message)));
+    return true;
+}
+
+// Hashes a file now, or after the running calculation.
+void OpenFileRequest(HWND dlg, const std::wstring& path)
+{
+    if (IsBusy())
+    {
+        g_pendingFiles.push_back(path);
+        return;
+    }
+    SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_SETCURSEL, DataFile, 0);
+    SetDlgItemTextW(dlg, IDC_DATA, path.c_str());
+    UpdateControlStates(dlg);
+    OnCalculate(dlg);
+}
+
+void OnOpenRequest(HWND dlg, std::unique_ptr<std::wstring> message)
+{
+    if (IsIconic(dlg))
+        ShowWindow(dlg, SW_RESTORE);
+    SetForegroundWindow(dlg);
+    if (message->size() < 2)
+        return;   // just show the window
+    std::wstring path = message->substr(1);
+    if ((*message)[0] == L'D')
+        ShowFolderHashWindow(dlg, path, true);
+    else
+        OpenFileRequest(dlg, path);
+}
+
+void OnToggleSingleInstance()
+{
+    Settings settings = LoadSettings();
+    settings.singleInstance = !settings.singleInstance;
+    SaveSettings(settings);
+    if (settings.singleInstance)
+        ClaimSingleInstance();
+    else
+        ReleaseSingleInstance();
+}
+
 void OnCalcDone(HWND dlg)
 {
     KillTimer(dlg, kProgressTimer);
     if (g_worker.joinable())
         g_worker.join();
+    if (!g_pendingFiles.empty())
+        PostMessageW(dlg, WM_APP_NEXT_FILE, 0, 0);   // after this result is shown
 
     std::unique_ptr<CalcJob> job = std::move(g_job);
     bool cancelled = g_userCancelled;
@@ -723,7 +856,9 @@ void OnHelp(HWND dlg)
         L"Settings > Add to Explorer Context Menu adds \"Calculate hash with HashCalc\" for files "
         L"and \"Hash folder with HashCalc\" for folders. On Windows 11 they are under \"Show more options\".\n\n"
         L"Command line: run \"HashCalc -h\" in a console for all options. "
-        L"Settings > Add to PATH lets you type \"hashcalc\" in any new console window.",
+        L"Settings > Add to PATH lets you type \"hashcalc\" in any new console window.\n\n"
+        L"Settings > Single Instance (off by default) keeps one window: opening HashCalc again, or "
+        L"right-clicking a file, uses the window that is already open.",
         L"HashCalc Help", MB_ICONINFORMATION);
 }
 
@@ -804,6 +939,8 @@ void OnReset(HWND dlg)
     ApplyAlwaysOnTop(dlg, false);
 
     SaveSettings(defaults);
+    ReleaseSingleInstance();   // Single Instance is off by default
+    g_pendingFiles.clear();
     UpdateControlStates(dlg);
 }
 
@@ -1026,6 +1163,7 @@ void OnInitMenuPopup(HWND dlg, HMENU menu)
     EnableMenuItem(menu, IDM_FILE_RESET, MF_BYCOMMAND | (IsBusy() ? MF_GRAYED : MF_ENABLED));
     CheckMenuItem(menu, IDM_SETTINGS_PATH, MF_BYCOMMAND | (IsOnPath() ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_TOPMOST, MF_BYCOMMAND | (IsAlwaysOnTop(dlg) ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(menu, IDM_SETTINGS_SINGLE, MF_BYCOMMAND | (LoadSettings().singleInstance ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_SHELL, MF_BYCOMMAND |
         (IsShellIntegrationInstalled() ? MF_CHECKED : MF_UNCHECKED));
     EnableMenuItem(menu, IDM_FILE_OPEN, MF_BYCOMMAND | (IsBusy() ? MF_GRAYED : MF_ENABLED));
@@ -1105,6 +1243,7 @@ void InitLayout(HWND dlg)
 void OnInitDialog(HWND dlg)
 {
     g_dlg = dlg;
+    SetPropW(dlg, kInstanceProp, reinterpret_cast<HANDLE>(1));   // found by Single Instance launches
     SetWindowTextW(dlg, L"HashCalc " VERSION_STR);
 
     HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -1217,6 +1356,9 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
             return TRUE;
         case IDM_SETTINGS_SHELL:
             OnToggleShellIntegration(dlg);
+            return TRUE;
+        case IDM_SETTINGS_SINGLE:
+            OnToggleSingleInstance();
             return TRUE;
         case IDM_SETTINGS_TOPMOST:
             OnToggleAlwaysOnTop(dlg);
@@ -1334,7 +1476,27 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
         ShowFolderHashWindow(dlg, g_startup.folder, true);
         return TRUE;
 
+    case WM_COPYDATA:
+        SetWindowLongPtrW(dlg, DWLP_MSGRESULT,
+            OnCopyData(dlg, reinterpret_cast<const COPYDATASTRUCT*>(lParam)) ? 1 : 0);
+        return TRUE;
+
+    case WM_APP_OPEN_REQUEST:
+        OnOpenRequest(dlg, std::unique_ptr<std::wstring>(reinterpret_cast<std::wstring*>(lParam)));
+        return TRUE;
+
+    case WM_APP_NEXT_FILE:
+        if (!IsBusy() && !g_pendingFiles.empty())
+        {
+            std::wstring next = std::move(g_pendingFiles.front());
+            g_pendingFiles.pop_front();
+            OpenFileRequest(dlg, next);
+        }
+        return TRUE;
+
     case WM_DESTROY:
+        RemovePropW(dlg, kInstanceProp);
+        ReleaseSingleInstance();
         for (HFONT* font : { &g_logoFont, &g_iconFont })
         {
             if (*font)
@@ -1397,6 +1559,10 @@ bool RelaunchDetached(int argc, wchar_t** argv, int firstArg)
 int RunGui(int argc, wchar_t** argv)
 {
     ParseStartupArgs(argc, argv);
+
+    // Single Instance: hand this launch to the open window instead.
+    if (LoadSettings().singleInstance && !ClaimSingleInstance() && ForwardToRunningInstance())
+        return 0;
 
     HINSTANCE instance = GetModuleHandleW(nullptr);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);

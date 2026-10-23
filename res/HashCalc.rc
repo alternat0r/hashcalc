@@ -25,6 +25,7 @@ BEGIN
     POPUP "&Settings"
     BEGIN
         MENUITEM "Always on &Top\tCtrl+T",             IDM_SETTINGS_TOPMOST
+        MENUITEM "&Single Instance",                   IDM_SETTINGS_SINGLE
         MENUITEM "Add to Explorer &Context Menu",      IDM_SETTINGS_SHELL
         MENUITEM "Add to &PATH (Command Line)...",     IDM_SETTINGS_PATH
     END

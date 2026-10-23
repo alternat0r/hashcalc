@@ -138,6 +138,7 @@ Settings LoadSettings()
         s.algorithms = ReadDword(key, L"Algorithms", s.algorithms);
         s.includeSubfolders = ReadDword(key, L"IncludeSubfolders", s.includeSubfolders) != 0;
         s.alwaysOnTop = ReadDword(key, L"AlwaysOnTop", s.alwaysOnTop) != 0;
+        s.singleInstance = ReadDword(key, L"SingleInstance", s.singleInstance) != 0;
         s.pathFolder = ReadString(key, L"PathFolder");
         RegCloseKey(key);
     }
@@ -151,6 +152,8 @@ void SaveSettings(const Settings& settings)
         return;
     DWORD subfolders = settings.includeSubfolders ? 1 : 0;
     DWORD onTop = settings.alwaysOnTop ? 1 : 0;
+    DWORD single = settings.singleInstance ? 1 : 0;
+    RegSetValueExW(key, L"SingleInstance", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&single), sizeof(DWORD));
     RegSetValueExW(key, L"Algorithms", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&settings.algorithms), sizeof(DWORD));
     RegSetValueExW(key, L"IncludeSubfolders", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&subfolders), sizeof(DWORD));
     RegSetValueExW(key, L"AlwaysOnTop", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&onTop), sizeof(DWORD));

@@ -10,9 +10,10 @@ dist/
 # build.bat temporary file
 version.h.bak
 
-# Personal helper scripts, kept local
+# Personal helper scripts and notes, kept local
 push.bat
 release.bat
+notes.txt
 
 # release.bat output and temporary file
 release/

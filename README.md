@@ -21,6 +21,7 @@ A small, fast hash calculator for Windows. It works as a normal window **and** a
 - **Right-click menu in Explorer** (optional): "Calculate hash with HashCalc".
 - **Command line** for scripts, including checking files against a checksum list.
 - **Always on top** (Settings menu or Ctrl+T), so the window stays visible.
+- **Single Instance** (Settings menu, off by default): opening HashCalc again, or right-clicking a file in Explorer, uses the window that is already open. Files sent while it is busy are hashed one after another.
 - **Cancel** a running calculation, and **Reset** (Ctrl+R) everything back to the defaults.
 - **Add to PATH** (optional), so you can type `hashcalc` in any console window.
 

@@ -16,6 +16,7 @@
 #define IDM_SETTINGS_SHELL      40010
 #define IDM_SETTINGS_TOPMOST    40011
 #define IDM_SETTINGS_PATH       40012
+#define IDM_SETTINGS_SINGLE     40013
 #define IDM_HELP_HELP           40020
 #define IDM_HELP_ABOUT          40021
 

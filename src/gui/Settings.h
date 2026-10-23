@@ -11,6 +11,7 @@ struct Settings
     DWORD algorithms = 1u << 3;   // bit per HashAlg; default SHA256
     bool includeSubfolders = true;
     bool alwaysOnTop = false;
+    bool singleInstance = false;  // reuse the open window instead of starting another
     std::wstring pathFolder;      // folder HashCalc.exe was copied to for the PATH, "" = none
 };
 
