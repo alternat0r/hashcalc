@@ -26,7 +26,7 @@ BEGIN
     BEGIN
         MENUITEM "Always on &Top\tCtrl+T",             IDM_SETTINGS_TOPMOST
         MENUITEM "Add to Explorer &Context Menu",      IDM_SETTINGS_SHELL
-        MENUITEM "Add to &PATH (Command Line)",        IDM_SETTINGS_PATH
+        MENUITEM "Add to &PATH (Command Line)...",     IDM_SETTINGS_PATH
     END
     POPUP "&Help"
     BEGIN
@@ -157,4 +157,19 @@ BEGIN
     PUSHBUTTON      "Copy All", IDC_F_COPY, 209, 219, 50, 14
     PUSHBUTTON      "Export...", IDC_F_EXPORT, 263, 219, 50, 14
     PUSHBUTTON      "Close", IDCANCEL, 323, 219, 50, 14
+END
+
+// Settings > Add to PATH: where to copy HashCalc.exe (default C:\tools).
+IDD_PATHSETUP DIALOGEX 0, 0, 260, 104
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Add HashCalc to PATH"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "HashCalc.exe will be copied to this folder, and the folder will be added to your PATH. Then you can type ""hashcalc"" in any new Command Prompt or PowerShell window.", IDC_STATIC, 7, 7, 246, 26
+    LTEXT           "Folder:", IDC_STATIC, 7, 42, 26, 8
+    EDITTEXT        IDC_P_FOLDER, 36, 40, 196, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_P_BROWSE, 235, 40, 18, 13
+    LTEXT           "Your user PATH is changed, so no administrator rights are needed.", IDC_STATIC, 7, 59, 246, 8
+    DEFPUSHBUTTON   "Add to PATH", IDOK, 149, 83, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 203, 83, 50, 14
 END

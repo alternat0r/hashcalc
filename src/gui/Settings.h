@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <string>
 
 // ---------------------------------------------------------------------------
 // Persisted settings (HKCU\Software\HashCalc)
@@ -10,6 +11,7 @@ struct Settings
     DWORD algorithms = 1u << 3;   // bit per HashAlg; default SHA256
     bool includeSubfolders = true;
     bool alwaysOnTop = false;
+    std::wstring pathFolder;      // folder HashCalc.exe was copied to for the PATH, "" = none
 };
 
 Settings LoadSettings();
@@ -27,10 +29,10 @@ bool InstallShellIntegration();
 bool RemoveShellIntegration();
 
 // ---------------------------------------------------------------------------
-// Command line access: adds the folder of this executable to the user's PATH
-// (HKCU\Environment, no admin rights needed), so "hashcalc" works in any new
-// cmd/PowerShell window. Running programs are notified of the change.
+// Command line access: a folder (e.g. C:\tools, holding a copy of HashCalc.exe)
+// on the user's PATH (HKCU\Environment, no admin rights needed), so "hashcalc"
+// works in any new cmd/PowerShell window. Running programs are notified.
 // ---------------------------------------------------------------------------
-bool IsInUserPath();
-bool AddToUserPath();
-bool RemoveFromUserPath();
+bool IsFolderInUserPath(const std::wstring& folder);
+bool AddFolderToUserPath(const std::wstring& folder);
+bool RemoveFolderFromUserPath(const std::wstring& folder);

@@ -49,14 +49,16 @@ bool SetString(HKEY root, const std::wstring& subKey, const wchar_t* name, const
         static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
 }
 
+std::wstring ReadString(HKEY key, const wchar_t* name)
+{
+    wchar_t value[2048];
+    DWORD size = sizeof(value);
+    return RegGetValueW(key, nullptr, name, RRF_RT_REG_SZ, nullptr, value, &size) == ERROR_SUCCESS
+        ? value : L"";
+}
+
 // --- User PATH -------------------------------------------------------------
 const wchar_t kEnvironmentKey[] = L"Environment";
-
-std::wstring ExeFolder()
-{
-    std::wstring path = ExePath();
-    return path.substr(0, path.find_last_of(L'\\'));
-}
 
 // For comparing PATH entries: expand %VARS%, drop quotes, spaces and a
 // trailing backslash, ignore case.
@@ -136,6 +138,7 @@ Settings LoadSettings()
         s.algorithms = ReadDword(key, L"Algorithms", s.algorithms);
         s.includeSubfolders = ReadDword(key, L"IncludeSubfolders", s.includeSubfolders) != 0;
         s.alwaysOnTop = ReadDword(key, L"AlwaysOnTop", s.alwaysOnTop) != 0;
+        s.pathFolder = ReadString(key, L"PathFolder");
         RegCloseKey(key);
     }
     return s;
@@ -151,6 +154,11 @@ void SaveSettings(const Settings& settings)
     RegSetValueExW(key, L"Algorithms", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&settings.algorithms), sizeof(DWORD));
     RegSetValueExW(key, L"IncludeSubfolders", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&subfolders), sizeof(DWORD));
     RegSetValueExW(key, L"AlwaysOnTop", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&onTop), sizeof(DWORD));
+    if (settings.pathFolder.empty())
+        RegDeleteValueW(key, L"PathFolder");
+    else
+        RegSetValueExW(key, L"PathFolder", 0, REG_SZ, reinterpret_cast<const BYTE*>(settings.pathFolder.c_str()),
+            static_cast<DWORD>((settings.pathFolder.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(key);
 }
 
@@ -184,22 +192,22 @@ bool InstallShellIntegration()
     return ok;
 }
 
-bool IsInUserPath()
+bool IsFolderInUserPath(const std::wstring& folder)
 {
     std::wstring value;
     DWORD type;
-    if (!ReadUserPath(value, type))
+    if (folder.empty() || !ReadUserPath(value, type))
         return false;
-    std::wstring folder = NormalizeFolder(ExeFolder());
+    std::wstring wanted = NormalizeFolder(folder);
     for (const std::wstring& entry : SplitPath(value))
-        if (NormalizeFolder(entry) == folder)
+        if (NormalizeFolder(entry) == wanted)
             return true;
     return false;
 }
 
-bool AddToUserPath()
+bool AddFolderToUserPath(const std::wstring& folder)
 {
-    if (IsInUserPath())
+    if (IsFolderInUserPath(folder))
         return true;
     std::wstring value;
     DWORD type;
@@ -209,17 +217,17 @@ bool AddToUserPath()
         value.pop_back();
     if (!value.empty())
         value += L';';
-    value += ExeFolder();
+    value += folder;
     return WriteUserPath(value, type);
 }
 
-bool RemoveFromUserPath()
+bool RemoveFolderFromUserPath(const std::wstring& folderToRemove)
 {
     std::wstring value;
     DWORD type;
     if (!ReadUserPath(value, type))
         return false;
-    std::wstring folder = NormalizeFolder(ExeFolder());
+    std::wstring folder = NormalizeFolder(folderToRemove);
     std::wstring kept;
     bool removed = false;
     for (const std::wstring& entry : SplitPath(value))

@@ -108,7 +108,7 @@ std::wstring ExePath()
     }
 }
 
-bool BrowseForFolder(HWND owner, std::wstring& folder)
+bool BrowseForFolder(HWND owner, std::wstring& folder, const wchar_t* title)
 {
     IFileOpenDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
@@ -118,7 +118,7 @@ bool BrowseForFolder(HWND owner, std::wstring& folder)
     DWORD options = 0;
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    dialog->SetTitle(L"Select a folder to hash");
+    dialog->SetTitle(title);
 
     IShellItem* initial = nullptr;
     if (!folder.empty() && SUCCEEDED(SHCreateItemFromParsingName(folder.c_str(), nullptr, IID_PPV_ARGS(&initial))))

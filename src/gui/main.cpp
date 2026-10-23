@@ -3,6 +3,8 @@
 #include <commdlg.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <shlwapi.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -790,7 +792,8 @@ void OnReset(HWND dlg)
     SendDlgItemMessageW(dlg, IDC_KEYFORMAT, CB_SETCURSEL, KeyHex, 0);
     SetDlgItemTextW(dlg, IDC_KEY, L"");
 
-    const Settings defaults;
+    Settings defaults;
+    defaults.pathFolder = LoadSettings().pathFolder;   // Add to PATH is kept, like the Explorer menu
     for (int i = 0; i < kHashAlgCount; ++i)
         CheckDlgButton(dlg, IDC_CHK_BASE + i, (defaults.algorithms >> i) & 1 ? BST_CHECKED : BST_UNCHECKED);
     ClearResults(dlg);
@@ -803,43 +806,151 @@ void OnReset(HWND dlg)
     UpdateControlStates(dlg);
 }
 
-// Settings > Add to PATH: lets "hashcalc" (the file name of this exe) run from
-// any new console window.
+constexpr wchar_t kDefaultPathFolder[] = L"C:\\tools";
+
+bool IsOnPath()
+{
+    return IsFolderInUserPath(LoadSettings().pathFolder);
+}
+
+// "Add HashCalc to PATH" window: asks for the folder to copy HashCalc.exe to.
+// lParam points to the folder string (initial value in, chosen folder out).
+INT_PTR CALLBACK PathSetupProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+        SetWindowLongPtrW(dlg, GWLP_USERDATA, lParam);
+        SetDlgItemTextW(dlg, IDC_P_FOLDER, reinterpret_cast<std::wstring*>(lParam)->c_str());
+        return TRUE;
+
+    case WM_COMMAND:
+    {
+        auto* folder = reinterpret_cast<std::wstring*>(GetWindowLongPtrW(dlg, GWLP_USERDATA));
+        switch (LOWORD(wParam))
+        {
+        case IDC_P_BROWSE:
+        {
+            std::wstring current = GetDlgText(dlg, IDC_P_FOLDER);
+            if (BrowseForFolder(dlg, current, L"Folder for HashCalc.exe"))
+                SetDlgItemTextW(dlg, IDC_P_FOLDER, current.c_str());
+            return TRUE;
+        }
+        case IDOK:
+        {
+            std::wstring text = GetDlgText(dlg, IDC_P_FOLDER);
+            size_t first = text.find_first_not_of(L" \t\"");
+            size_t last = text.find_last_not_of(L" \t\"");
+            text = first == std::wstring::npos ? L"" : text.substr(first, last - first + 1);
+            while (text.size() > 3 && (text.back() == L'\\' || text.back() == L'/'))
+                text.pop_back();
+            if (text.empty() || PathIsRelativeW(text.c_str()))
+            {
+                MessageBoxW(dlg, L"Please enter a full folder path, for example C:\\tools.",
+                    L"Add HashCalc to PATH", MB_ICONINFORMATION);
+                return TRUE;
+            }
+            *folder = text;
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    }
+    return FALSE;
+}
+
+// Copies this exe to <folder>\HashCalc.exe and puts the folder on the user PATH.
+void AddToPath(HWND dlg)
+{
+    Settings settings = LoadSettings();
+    std::wstring folder = settings.pathFolder.empty() ? kDefaultPathFolder : settings.pathFolder;
+    if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PATHSETUP), dlg, PathSetupProc,
+            reinterpret_cast<LPARAM>(&folder)) != IDOK)
+        return;
+
+    int created = SHCreateDirectoryExW(nullptr, folder.c_str(), nullptr);   // no shell error UI
+    if (created != ERROR_SUCCESS && created != ERROR_ALREADY_EXISTS && created != ERROR_FILE_EXISTS)
+    {
+        MessageBoxW(dlg, (L"Cannot create the folder:\n" + folder + L"\n\n" + ErrorMessage(created)).c_str(),
+            L"HashCalc", MB_ICONERROR);
+        return;
+    }
+
+    std::wstring source = ExePath();
+    std::wstring target = folder + L"\\HashCalc.exe";
+    if (_wcsicmp(source.c_str(), target.c_str()) != 0 && !CopyFileW(source.c_str(), target.c_str(), FALSE))
+    {
+        MessageBoxW(dlg, (L"Cannot copy HashCalc.exe to:\n" + target + L"\n\n" + ErrorMessage(GetLastError()) +
+            L"\n\nIf HashCalc is running from there, close it first, or choose another folder.").c_str(),
+            L"HashCalc", MB_ICONERROR);
+        return;
+    }
+
+    if (!AddFolderToUserPath(folder))
+    {
+        MessageBoxW(dlg, L"Could not add the folder to your PATH.", L"HashCalc", MB_ICONERROR);
+        return;
+    }
+    settings.pathFolder = folder;
+    SaveSettings(settings);
+
+    MessageBoxW(dlg, (L"HashCalc.exe was copied to " + folder + L" and the folder was added to your PATH.\n\n"
+        L"Open a new Command Prompt or PowerShell window and type:\n\n"
+        L"    hashcalc -h\n\n"
+        L"Windows that are already open keep the old PATH. To update the command after a new "
+        L"version, use this menu again (remove, then add).").c_str(),
+        L"HashCalc", MB_ICONINFORMATION);
+}
+
+void RemoveFromPath(HWND dlg)
+{
+    Settings settings = LoadSettings();
+    std::wstring folder = settings.pathFolder;
+    if (MessageBoxW(dlg, (L"Remove " + folder + L" from your PATH?\n\n"
+            L"The \"hashcalc\" command will stop working in new console windows.").c_str(),
+            L"HashCalc", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+        return;
+
+    if (!RemoveFolderFromUserPath(folder))
+    {
+        MessageBoxW(dlg, L"Could not remove the folder from your PATH.", L"HashCalc", MB_ICONERROR);
+        return;
+    }
+    settings.pathFolder.clear();
+    SaveSettings(settings);
+
+    // The folder itself is kept: it may hold other tools.
+    std::wstring copy = folder + L"\\HashCalc.exe";
+    if (GetFileAttributesW(copy.c_str()) != INVALID_FILE_ATTRIBUTES &&
+        _wcsicmp(copy.c_str(), ExePath().c_str()) != 0 &&
+        MessageBoxW(dlg, (L"Also delete the copy " + copy + L"?").c_str(), L"HashCalc",
+            MB_YESNO | MB_ICONQUESTION) == IDYES &&
+        !DeleteFileW(copy.c_str()))
+    {
+        MessageBoxW(dlg, (L"Cannot delete " + copy + L"\n\n" + ErrorMessage(GetLastError())).c_str(),
+            L"HashCalc", MB_ICONERROR);
+    }
+}
+
+// Settings > Add to PATH: copy HashCalc.exe to a tools folder (C:\tools by
+// default) on the user PATH, so "hashcalc" works in any new console window.
 void OnTogglePath(HWND dlg)
 {
-    if (IsInUserPath())
-    {
-        if (!RemoveFromUserPath())
-            MessageBoxW(dlg, L"Could not remove HashCalc from your PATH.", L"HashCalc", MB_ICONERROR);
-        return;
-    }
-    if (!AddToUserPath())
-    {
-        MessageBoxW(dlg, L"Could not add HashCalc to your PATH.", L"HashCalc", MB_ICONERROR);
-        return;
-    }
-
-    std::wstring exe = ExePath();
-    size_t slash = exe.find_last_of(L'\\');
-    std::wstring folder = exe.substr(0, slash);
-    std::wstring command = exe.substr(slash + 1);
-    size_t dot = command.find_last_of(L'.');
-    if (dot != std::wstring::npos)
-        command.resize(dot);
-    CharLowerBuffW(command.data(), static_cast<DWORD>(command.size()));
-
-    MessageBoxW(dlg, (L"Added to your PATH:\n" + folder + L"\n\n"
-        L"Open a new Command Prompt or PowerShell window and type:\n\n"
-        L"    " + command + L" -h\n\n"
-        L"Windows that are already open keep the old PATH. "
-        L"If you move HashCalc, add it again.").c_str(),
-        L"HashCalc", MB_ICONINFORMATION);
+    if (IsOnPath())
+        RemoveFromPath(dlg);
+    else
+        AddToPath(dlg);
 }
 
 void OnInitMenuPopup(HWND dlg, HMENU menu)
 {
     EnableMenuItem(menu, IDM_FILE_RESET, MF_BYCOMMAND | (IsBusy() ? MF_GRAYED : MF_ENABLED));
-    CheckMenuItem(menu, IDM_SETTINGS_PATH, MF_BYCOMMAND | (IsInUserPath() ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(menu, IDM_SETTINGS_PATH, MF_BYCOMMAND | (IsOnPath() ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_TOPMOST, MF_BYCOMMAND | (IsAlwaysOnTop(dlg) ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_SHELL, MF_BYCOMMAND |
         (IsShellIntegrationInstalled() ? MF_CHECKED : MF_UNCHECKED));

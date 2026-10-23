@@ -55,7 +55,13 @@ Turn on **Settings > Add to Explorer Context Menu**. Then you can right-click an
 
 Open Command Prompt, PowerShell or Terminal and run HashCalc with options.
 
-To type just `hashcalc` from any folder, turn on **Settings > Add to PATH (Command Line)** once. Then open a **new** console window. This adds the HashCalc folder to your own user PATH, so no admin rights are needed. Click it again to remove it.
+To type just `hashcalc` from any folder, use **Settings > Add to PATH (Command Line)...** once:
+
+1. Choose a folder for HashCalc. The default is `C:\tools`.
+2. Click **Add to PATH**. HashCalc copies `HashCalc.exe` to that folder and adds the folder to your user PATH, so no admin rights are needed.
+3. Open a **new** Command Prompt or PowerShell window and type `hashcalc -h`.
+
+Click the menu item again to remove the folder from your PATH. HashCalc then asks if it should also delete the copy. After you download a new version, remove and add it again to update the copy.
 
 ```
 HashCalc setup.exe                          SHA256 of one file

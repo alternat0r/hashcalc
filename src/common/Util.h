@@ -26,7 +26,7 @@ bool IsDirectory(const std::wstring& path);
 std::wstring ExePath();
 
 // Shows the folder picker. folder is the initial folder and receives the result.
-bool BrowseForFolder(HWND owner, std::wstring& folder);
+bool BrowseForFolder(HWND owner, std::wstring& folder, const wchar_t* title = L"Select a folder to hash");
 
 // WM_NCHITTEST handler for dialogs: reports the empty background (and labels,
 // which are transparent to the mouse) as title bar, so the window can be

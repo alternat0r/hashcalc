@@ -5,6 +5,7 @@
 #define IDR_MAINMENU            103
 #define IDR_ACCEL               104
 #define IDI_APP                 105
+#define IDD_PATHSETUP           106
 
 // Menu commands
 #define IDM_FILE_OPEN           40001
@@ -32,6 +33,10 @@
 #define IDC_SEP_TOP             1012
 #define IDC_SEP_MID             1013
 #define IDC_SEP_BOTTOM          1014
+
+// Add to PATH window
+#define IDC_P_FOLDER            1600
+#define IDC_P_BROWSE            1601
 
 // Folder hash window
 #define IDC_F_FOLDER            1500
