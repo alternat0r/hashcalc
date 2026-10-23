@@ -2,6 +2,9 @@
 
 #include <shobjidl.h>
 
+#include <cwchar>
+#include <cwctype>
+
 #pragma comment(lib, "ole32.lib")
 
 std::wstring GetDlgText(HWND dlg, int id)
@@ -185,6 +188,38 @@ void AnchorLayout::Apply(int cx, int cy)
     }
     EndDeferWindowPos(defer);
     InvalidateRect(m_dlg, nullptr, TRUE);
+}
+
+std::wstring SpreadsheetText(const std::wstring& text)
+{
+    if (!text.empty() && wcschr(L"=+-@\t\r", text[0]) != nullptr)
+        return L"'" + text;
+    return text;
+}
+
+std::wstring CsvField(const std::wstring& text)
+{
+    std::wstring s = SpreadsheetText(text);
+    if (s.find_first_of(L",\"\r\n") == std::wstring::npos)
+        return s;
+    std::wstring out = L"\"";
+    for (wchar_t c : s)
+    {
+        if (c == L'"') out += L'"';
+        out += c;
+    }
+    return out + L"\"";
+}
+
+bool IsNetworkPath(const std::wstring& path)
+{
+    auto isSeparator = [](wchar_t c) { return c == L'\\' || c == L'/'; };
+    if (path.size() < 2 || !isSeparator(path[0]) || !isSeparator(path[1]))
+        return false;
+    // \\?\C:\... is a local path in long form
+    if (path.size() >= 6 && path[2] == L'?' && isSeparator(path[3]) && iswalpha(path[4]) && path[5] == L':')
+        return false;
+    return true;
 }
 
 bool WriteUtf8File(const std::wstring& path, const std::wstring& text, bool bom)

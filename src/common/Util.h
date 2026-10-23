@@ -33,6 +33,17 @@ bool BrowseForFolder(HWND owner, std::wstring& folder, const wchar_t* title = L"
 // dragged from anywhere. Returns TRUE if it set the result.
 INT_PTR DragAnywhereHitTest(HWND dlg, WPARAM wParam, LPARAM lParam);
 
+// Spreadsheets run cells that start with = + - @ as formulas (CSV injection).
+// Returns the text with a leading apostrophe in that case, so it stays text.
+std::wstring SpreadsheetText(const std::wstring& text);
+
+// One CSV field: spreadsheet-safe, quoted when needed.
+std::wstring CsvField(const std::wstring& text);
+
+// True for network and device paths (\\server\share, \\?\UNC\..., \\.\device).
+// Local long paths (\\?\C:\...) are not network paths.
+bool IsNetworkPath(const std::wstring& path);
+
 // Writes UTF-8 text to a file (optionally with a byte order mark).
 bool WriteUtf8File(const std::wstring& path, const std::wstring& text, bool bom);
 

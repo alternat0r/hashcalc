@@ -241,36 +241,41 @@ void RefreshStatus(FolderWindow& w)
 {
     if (!w.job) return;
     FolderJob& job = *w.job;
-    wchar_t text[256];
+    std::wstring text;   // built as a string: paths in it can be long
     int progress = 0;
 
-    if (!job.scanDone)
+    if (!job.error.empty() && !IsRunning(w))
     {
-        swprintf_s(text, L"Scanning folder... %zu files found", job.scanned.load());
+        text = job.error;
+        std::replace(text.begin(), text.end(), L'\n', L' ');
+    }
+    else if (!job.scanDone)
+    {
+        text = L"Scanning folder... " + std::to_wstring(job.scanned.load()) + L" files found";
     }
     else if (IsRunning(w))
     {
         uint64_t done = std::min<uint64_t>(job.bytesDone, job.totalBytes);
         progress = job.totalBytes ? static_cast<int>(done * kProgressRange / job.totalBytes)
                                   : static_cast<int>(job.finished * kProgressRange / std::max<size_t>(1, job.files.size()));
-        swprintf_s(text, L"%d%%  -  hashing %zu of %zu files  (%s of %s)", std::min(progress / 10, 99),
-            job.finished.load(), job.files.size(), FormatSize(done).c_str(), FormatSize(job.totalBytes).c_str());
-    }
-    else if (!job.error.empty())
-    {
-        swprintf_s(text, L"%s", job.error.c_str());
+        text = std::to_wstring(std::min(progress / 10, 99)) + L"%  -  hashing " +
+            std::to_wstring(job.finished.load()) + L" of " + std::to_wstring(job.files.size()) + L" files  (" +
+            FormatSize(done) + L" of " + FormatSize(job.totalBytes) + L")";
     }
     else
     {
-        swprintf_s(text, L"%s: %zu of %zu files hashed  (%s in %.1f s)%s",
-            job.cancel ? L"Stopped" : L"Done", job.finished.load() - job.failed.load(), job.files.size(),
-            FormatSize(job.totalBytes).c_str(), job.seconds,
-            job.failed ? (L",  " + std::to_wstring(job.failed.load()) + L" failed").c_str() : L"");
+        wchar_t seconds[32];
+        swprintf_s(seconds, L"%.1f", job.seconds);
+        text = std::wstring(job.cancel ? L"Stopped" : L"Done") + L": " +
+            std::to_wstring(job.finished.load() - job.failed.load()) + L" of " + std::to_wstring(job.files.size()) +
+            L" files hashed  (" + FormatSize(job.totalBytes) + L" in " + seconds + L" s)";
+        if (job.failed)
+            text += L",  " + std::to_wstring(job.failed.load()) + L" failed";
         progress = job.cancel ? static_cast<int>(SendDlgItemMessageW(w.dlg, IDC_F_PROGRESS, PBM_GETPOS, 0, 0))
                               : kProgressRange;
     }
 
-    SetDlgItemTextW(w.dlg, IDC_F_STATUS, text);
+    SetDlgItemTextW(w.dlg, IDC_F_STATUS, text.c_str());
     // Set without the themed glide animation (backwards moves are instant).
     HWND bar = GetDlgItem(w.dlg, IDC_F_PROGRESS);
     SendMessageW(bar, PBM_SETRANGE32, 0, kProgressRange + 1);
@@ -356,7 +361,7 @@ void OnCopyAll(FolderWindow& w)
     for (size_t row = 0; row < w.job->files.size(); ++row)
     {
         const FileEntry& e = w.job->files[row];
-        text += e.relPath + L"\t" + std::to_wstring(e.size);
+        text += SpreadsheetText(e.relPath) + L"\t" + std::to_wstring(e.size);
         for (size_t c = 0; c < w.columns.size(); ++c)
             text += L"\t" + CellText(w, row, static_cast<int>(c) + 2);
         text += L"\r\n";
@@ -366,19 +371,6 @@ void OnCopyAll(FolderWindow& w)
         SetDlgItemTextW(w.dlg, IDC_F_COPY, L"Copied!");
         SetTimer(w.dlg, kCopyTimer, kCopyFeedbackMs, nullptr);
     }
-}
-
-std::wstring CsvField(const std::wstring& s)
-{
-    if (s.find_first_of(L",\"\r\n") == std::wstring::npos)
-        return s;
-    std::wstring out = L"\"";
-    for (wchar_t c : s)
-    {
-        if (c == L'"') out += L'"';
-        out += c;
-    }
-    return out + L"\"";
 }
 
 void OnExport(FolderWindow& w)

@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <exception>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +25,7 @@ constexpr int kExitFailed = 1;
 constexpr int kExitUsage = 2;
 constexpr unsigned kMaxThreads = 8;
 constexpr size_t kReadBufferSize = 1 << 20;
+constexpr uint64_t kMaxChecksumFileSize = 64ull << 20;   // checksum files are read into memory
 
 const wchar_t kBanner[] = L"HashCalc " VERSION_STR L" - file and text hash calculator\n\n";
 
@@ -57,7 +60,11 @@ Verify:
   -c <file>       check the files listed in a checksum file
                   (md5sum / sha256sum / BSD format; relative paths are looked up
                   in the current folder, then next to the checksum file)
+  -allow-unc      also check network paths (\\server\share\...) listed in the
+                  checksum file; they are skipped by default because opening
+                  them sends your Windows login to that server
 
+  --              end of options: everything after it is a file name
   -h, -?          show this help
 
 Exit code: 0 = success, 1 = some files failed or did not match, 2 = invalid arguments.
@@ -79,6 +86,7 @@ struct CliOptions
     bool recurse = false;
     bool banner = true;
     bool upper = false;
+    bool allowUnc = false;
     Format format = Format::Default;
     unsigned threads = 0;
     std::wstring outFile;
@@ -223,19 +231,6 @@ std::vector<std::wstring> Split(const std::wstring& s, const wchar_t* separators
     return parts;
 }
 
-std::wstring CsvField(const std::wstring& s)
-{
-    if (s.find_first_of(L",\"\r\n") == std::wstring::npos)
-        return s;
-    std::wstring out = L"\"";
-    for (wchar_t c : s)
-    {
-        if (c == L'"') out += L'"';
-        out += c;
-    }
-    return out + L"\"";
-}
-
 bool IsHex(const std::wstring& s)
 {
     return !s.empty() && std::all_of(s.begin(), s.end(), [](wchar_t c) { return iswxdigit(c) != 0; });
@@ -268,7 +263,15 @@ void RunOrdered(size_t count, unsigned threads, Work work, Print print)
             size_t i = next++;
             if (i >= count)
                 return;
-            work(i, buffer);
+            try
+            {
+                work(i, buffer);
+            }
+            catch (...)
+            {
+                // An exception must not leave this thread (that would end the
+                // process); work() records its own error for this item.
+            }
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 ready[i] = 1;
@@ -317,17 +320,29 @@ bool ParseArgs(int argc, wchar_t** argv, CliOptions& opt, Console& con, bool& sh
         opt.anyAlgorithm = true;
     };
 
+    bool endOfOptions = false;
     for (int i = 1; i < argc; ++i)
     {
         std::wstring arg = argv[i];
-        bool isOption = arg.size() > 1 && (arg[0] == L'-' || arg[0] == L'/');
+        if (!endOfOptions && arg == L"--")
+        {
+            endOfOptions = true;   // everything after "--" is a file name
+            continue;
+        }
+        bool isOption = !endOfOptions && arg.size() > 1 && (arg[0] == L'-' || arg[0] == L'/');
         if (!isOption)
         {
             opt.inputs.push_back(arg);
             continue;
         }
 
-        std::wstring name = Lower(arg.substr(arg.find_first_not_of(L"-/")));
+        size_t nameStart = arg.find_first_not_of(L"-/");
+        if (nameStart == std::wstring::npos)
+        {
+            con.Error(L"unknown option: " + arg + L"  (use -h for help)");
+            return false;
+        }
+        std::wstring name = Lower(arg.substr(nameStart));
         std::wstring value;
         int alg = 0;
 
@@ -401,6 +416,8 @@ bool ParseArgs(int argc, wchar_t** argv, CliOptions& opt, Console& con, bool& sh
             }
             opt.threads = static_cast<unsigned>(n);
         }
+        else if (name == L"allow-unc" || name == L"allowunc")
+            opt.allowUnc = true;
         else if (name == L"c" || name == L"check")
         {
             if (!next(i, arg, opt.checkFile)) return false;
@@ -541,8 +558,15 @@ int RunHash(CliOptions& opt, Console& con)
         Item& item = items[i];
         if (item.isData)
         {
-            HashBytes(item.data, opt.hash, item.result);
-            item.ok = true;
+            try
+            {
+                HashBytes(item.data, opt.hash, item.result);
+                item.ok = true;
+            }
+            catch (const std::exception&)
+            {
+                item.result.error = L"Hash calculation failed";
+            }
         }
         else
             item.ok = HashFile(item.path, opt.hash, item.result, buffer);
@@ -607,16 +631,27 @@ int RunHash(CliOptions& opt, Console& con)
 // ---------------------------------------------------------------------------
 // Verify (-c)
 // ---------------------------------------------------------------------------
-bool ReadTextFile(const std::wstring& path, std::wstring& text)
+// Reads a whole checksum file (at most kMaxChecksumFileSize) as text.
+bool ReadTextFile(const std::wstring& path, std::wstring& text, std::wstring& error)
 {
     HANDLE file = CreateFileW(LongPath(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE)
+    {
+        error = ErrorMessage(GetLastError());
         return false;
+    }
     LARGE_INTEGER size = {};
-    GetFileSizeEx(file, &size);
+    if (!GetFileSizeEx(file, &size) || static_cast<uint64_t>(size.QuadPart) > kMaxChecksumFileSize)
+    {
+        CloseHandle(file);
+        error = L"checksum file is larger than 64 MB";
+        return false;
+    }
     std::vector<BYTE> data(static_cast<size_t>(size.QuadPart));
     DWORD read = 0;
     bool ok = data.empty() || (ReadFile(file, data.data(), static_cast<DWORD>(data.size()), &read, nullptr) && read == data.size());
+    if (!ok)
+        error = ErrorMessage(GetLastError());
     CloseHandle(file);
     if (!ok)
         return false;
@@ -663,6 +698,7 @@ struct CheckEntry
     std::wstring path;
     std::wstring expected;
     int alg = 0;
+    bool skipped = false;   // network path, not checked without -allow-unc
     FileHashResult result;
     bool ok = false;
 };
@@ -701,10 +737,10 @@ bool ParseCheckLine(const std::wstring& line, int defaultAlg, CheckEntry& entry)
 
 int RunVerify(CliOptions& opt, Console& con)
 {
-    std::wstring text;
-    if (!ReadTextFile(opt.checkFile, text))
+    std::wstring text, error;
+    if (!ReadTextFile(opt.checkFile, text, error))
     {
-        con.Error(opt.checkFile + L": " + ErrorMessage(GetLastError()));
+        con.Error(opt.checkFile + L": " + error);
         return kExitFailed;
     }
 
@@ -739,9 +775,14 @@ int RunVerify(CliOptions& opt, Console& con)
         }
         entry.path = entry.display;
         std::replace(entry.path.begin(), entry.path.end(), L'/', L'\\');
+        // A checksum file can come from anywhere. Opening \\server\... makes
+        // Windows log in to that server with the user's credentials (NTLM), so
+        // such lines are only checked with -allow-unc.
+        if (!opt.allowUnc && IsNetworkPath(entry.path))
+            entry.skipped = true;
         // Relative paths: current folder first (like sha256sum -c), then the
         // checksum file's folder, so "HashCalc -c D:\x\files.sha256" works too.
-        if (PathIsRelativeW(entry.path.c_str()) &&
+        else if (PathIsRelativeW(entry.path.c_str()) &&
             GetFileAttributesW(LongPath(entry.path).c_str()) == INVALID_FILE_ATTRIBUTES &&
             GetFileAttributesW(LongPath(base + entry.path).c_str()) != INVALID_FILE_ATTRIBUTES)
             entry.path = base + entry.path;
@@ -756,9 +797,11 @@ int RunVerify(CliOptions& opt, Console& con)
     if (opt.banner)
         con.Out(kBanner);
 
-    size_t passed = 0, mismatched = 0, unreadable = 0;
+    size_t passed = 0, mismatched = 0, unreadable = 0, skipped = 0;
     auto work = [&](size_t i, std::vector<BYTE>& buffer) {
         CheckEntry& e = entries[i];
+        if (e.skipped)
+            return;
         HashOptions options;
         options.selected[e.alg] = true;
         options.hmac = opt.hash.hmac;
@@ -767,7 +810,12 @@ int RunVerify(CliOptions& opt, Console& con)
     };
     auto print = [&](size_t i) {
         CheckEntry& e = entries[i];
-        if (!e.ok)
+        if (e.skipped)
+        {
+            ++skipped;
+            con.Out(e.display + L": SKIPPED (network path; use -allow-unc to check it)\n");
+        }
+        else if (!e.ok)
         {
             ++unreadable;
             con.Out(e.display + L": FAILED open or read (" + e.result.error + L")\n");
@@ -786,18 +834,19 @@ int RunVerify(CliOptions& opt, Console& con)
     };
     RunOrdered(entries.size(), DefaultThreads(opt), work, print);
 
-    wchar_t summary[160];
-    swprintf_s(summary, L"\n%zu OK, %zu FAILED, %zu unreadable", passed, mismatched, unreadable);
-    con.Out(summary);
+    std::wstring summary = L"\n" + std::to_wstring(passed) + L" OK, " + std::to_wstring(mismatched) +
+        L" FAILED, " + std::to_wstring(unreadable) + L" unreadable";
+    if (skipped)
+        summary += L", " + std::to_wstring(skipped) + L" network path(s) skipped";
     if (malformed)
-        con.Out(L", " + std::to_wstring(malformed) + L" malformed line(s) skipped");
-    con.Out(L"\n");
-    return mismatched || unreadable ? kExitFailed : kExitOk;
+        summary += L", " + std::to_wstring(malformed) + L" malformed line(s) skipped";
+    con.Out(summary + L"\n");
+    return mismatched || unreadable || skipped ? kExitFailed : kExitOk;
 }
 
 } // namespace
 
-int RunCli(int argc, wchar_t** argv)
+static int RunCliUnchecked(int argc, wchar_t** argv)
 {
     Console con;
     CliOptions opt;
@@ -823,6 +872,32 @@ int RunCli(int argc, wchar_t** argv)
     if (!opt.anyAlgorithm)
         opt.hash.selected[static_cast<int>(HashAlg::SHA256)] = true;
     return RunHash(opt, con);
+}
+
+int RunCli(int argc, wchar_t** argv)
+{
+    // Never end with an unhandled exception (which aborts the process).
+    std::wstring message;
+    try
+    {
+        return RunCliUnchecked(argc, argv);
+    }
+    catch (const std::bad_alloc&)
+    {
+        message = L"HashCalc: out of memory\n";
+    }
+    catch (const std::exception& e)
+    {
+        std::string what = e.what();
+        message = L"HashCalc: unexpected error: " + std::wstring(what.begin(), what.end()) + L"\n";
+    }
+    catch (...)
+    {
+        message = L"HashCalc: unexpected error\n";
+    }
+    Writer err(STD_ERROR_HANDLE);
+    err.Write(message);
+    return kExitFailed;
 }
 
 bool IsCliInvocation(int argc, wchar_t** argv)

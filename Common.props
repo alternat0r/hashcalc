@@ -15,9 +15,21 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Hardening: Control Flow Guard -->
+      <ControlFlowGuard>Guard</ControlFlowGuard>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>bcrypt.lib;comctl32.lib;shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>bcrypt.lib;comctl32.lib;shlwapi.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- DLL planting protection. bcrypt.dll is not a KnownDLL, so Windows would
+           look for it next to HashCalc.exe first (e.g. in Downloads). It is
+           delay-loaded instead, after wmain() has limited DLL loading to System32
+           (SetDefaultDllDirectories), and the loader is told to search only
+           System32 for this executable's own imports (DEPENDENTLOADFLAG 0x800 =
+           LOAD_LIBRARY_SEARCH_SYSTEM32). -->
+      <DelayLoadDLLs>bcrypt.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalOptions>/DEPENDENTLOADFLAG:0x800 %(AdditionalOptions)</AdditionalOptions>
+      <!-- Hardening: CET shadow stack compatible -->
+      <CETCompat>true</CETCompat>
     </Link>
     <Manifest>
       <EnableDpiAwareness>true</EnableDpiAwareness>

@@ -2,6 +2,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <objbase.h>
+#include <aclapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
@@ -806,7 +807,67 @@ void OnReset(HWND dlg)
     UpdateControlStates(dlg);
 }
 
-constexpr wchar_t kDefaultPathFolder[] = L"C:\\tools";
+// Default folder for Add to PATH: %LOCALAPPDATA%\Programs\HashCalc, which only
+// this user (and administrators) can write to. A shared folder such as C:\tools
+// lets other users replace HashCalc.exe or plant DLLs next to it.
+std::wstring DefaultPathFolder()
+{
+    std::wstring folder;
+    PWSTR programs = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_UserProgramFiles, 0, nullptr, &programs)))
+        folder = programs;
+    CoTaskMemFree(programs);
+    if (folder.empty())
+    {
+        wchar_t expanded[MAX_PATH];
+        if (ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Programs", expanded, ARRAYSIZE(expanded)))
+            folder = expanded;
+    }
+    return folder + L"\\HashCalc";
+}
+
+// True if a broad group (Everyone, Authenticated Users, Users, Interactive)
+// may create files in the folder or change the files in it.
+bool IsWritableByOthers(const std::wstring& folder)
+{
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (GetNamedSecurityInfoW(folder.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, &dacl, nullptr, &sd) != ERROR_SUCCESS)
+        return false;
+
+    BYTE sids[4][SECURITY_MAX_SID_SIZE];
+    const WELL_KNOWN_SID_TYPE broad[4] = { WinWorldSid, WinAuthenticatedUserSid, WinBuiltinUsersSid, WinInteractiveSid };
+    for (int i = 0; i < 4; ++i)
+    {
+        DWORD size = SECURITY_MAX_SID_SIZE;
+        CreateWellKnownSid(broad[i], nullptr, sids[i], &size);
+    }
+
+    bool writable = dacl == nullptr;   // no DACL: everyone has full access
+    const DWORD anyWrite = GENERIC_WRITE | GENERIC_ALL | WRITE_DAC | WRITE_OWNER;
+    for (DWORD i = 0; dacl && i < dacl->AceCount && !writable; ++i)
+    {
+        ACE_HEADER* header = nullptr;
+        if (!GetAce(dacl, i, reinterpret_cast<void**>(&header)) || header->AceType != ACCESS_ALLOWED_ACE_TYPE)
+            continue;
+        auto* ace = reinterpret_cast<ACCESS_ALLOWED_ACE*>(header);
+        PSID sid = &ace->SidStart;
+        bool broadSid = false;
+        for (auto& s : sids)
+            broadSid = broadSid || EqualSid(sid, s);
+        if (!broadSid)
+            continue;
+        bool forFolder = !(header->AceFlags & INHERIT_ONLY_ACE);
+        bool forFiles = (header->AceFlags & OBJECT_INHERIT_ACE) != 0;
+        if (forFolder && (ace->Mask & (FILE_ADD_FILE | anyWrite)))
+            writable = true;
+        if (forFiles && (ace->Mask & (FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | anyWrite)))
+            writable = true;
+    }
+    LocalFree(sd);
+    return writable;
+}
 
 bool IsOnPath()
 {
@@ -846,7 +907,7 @@ INT_PTR CALLBACK PathSetupProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
                 text.pop_back();
             if (text.empty() || PathIsRelativeW(text.c_str()))
             {
-                MessageBoxW(dlg, L"Please enter a full folder path, for example C:\\tools.",
+                MessageBoxW(dlg, L"Please enter a full folder path that starts with a drive letter.",
                     L"Add HashCalc to PATH", MB_ICONINFORMATION);
                 return TRUE;
             }
@@ -868,7 +929,7 @@ INT_PTR CALLBACK PathSetupProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
 void AddToPath(HWND dlg)
 {
     Settings settings = LoadSettings();
-    std::wstring folder = settings.pathFolder.empty() ? kDefaultPathFolder : settings.pathFolder;
+    std::wstring folder = settings.pathFolder.empty() ? DefaultPathFolder() : settings.pathFolder;
     if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PATHSETUP), dlg, PathSetupProc,
             reinterpret_cast<LPARAM>(&folder)) != IDOK)
         return;
@@ -878,6 +939,19 @@ void AddToPath(HWND dlg)
     {
         MessageBoxW(dlg, (L"Cannot create the folder:\n" + folder + L"\n\n" + ErrorMessage(created)).c_str(),
             L"HashCalc", MB_ICONERROR);
+        return;
+    }
+
+    if (IsWritableByOthers(folder) &&
+        MessageBoxW(dlg, (L"Other users of this PC can add or change files in:\n" + folder + L"\n\n"
+            L"They could replace HashCalc.exe, or put a harmful DLL next to it, and that code would then "
+            L"run every time you type \"hashcalc\".\n\n"
+            L"Recommended: " + DefaultPathFolder() + L" (only you can change it).\n\n"
+            L"Use this folder anyway?").c_str(),
+            L"HashCalc", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+    {
+        if (created == ERROR_SUCCESS)
+            RemoveDirectoryW(folder.c_str());   // only removes it if still empty
         return;
     }
 
@@ -1401,6 +1475,11 @@ bool GetMainHashOptions(HashOptions& options, std::wstring& error)
 //  - started from Explorer, a shortcut or the context menu: the GUI
 int wmain(int argc, wchar_t** argv)
 {
+    // First of all: load DLLs only from System32, never from the folder HashCalc
+    // runs from (e.g. Downloads), so a planted DLL there cannot be loaded.
+    // bcrypt.dll is delay-loaded (see Common.props) and so is covered too.
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+
     // Processes attached to our console: 0 = none (detached), 1 = a console
     // created just for us (older Windows that ignore the manifest policy, or
     // "start HashCalc"), 2+ = started from a shell. Not GetConsoleWindow():

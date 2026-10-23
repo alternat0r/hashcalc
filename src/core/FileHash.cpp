@@ -36,11 +36,12 @@ bool IsCancelled(const std::atomic<bool>* cancel)
     return cancel && cancel->load();
 }
 
-void ListFilesIn(const std::wstring& root, const std::wstring& rel, const std::wstring& pattern, bool recurse,
-                 std::vector<FoundFile>& out, const std::atomic<bool>* cancel, std::atomic<size_t>* counter)
+// Lists one folder: matching files go to out, subfolders to subfolders.
+void ListOneFolder(const std::wstring& root, const std::wstring& rel, const std::wstring& pattern, bool recurse,
+                   std::vector<FoundFile>& out, std::vector<std::wstring>& subfolders,
+                   const std::atomic<bool>* cancel, std::atomic<size_t>* counter)
 {
     const bool all = pattern == L"*";
-    std::vector<std::wstring> subfolders;
     WIN32_FIND_DATAW fd;
 
     // Pass 1: matching files (and, for "*", the subfolders too)
@@ -86,13 +87,6 @@ void ListFilesIn(const std::wstring& root, const std::wstring& rel, const std::w
             } while (FindNextFileW(find, &fd));
             FindClose(find);
         }
-    }
-
-    for (const std::wstring& sub : subfolders)
-    {
-        if (IsCancelled(cancel))
-            break;
-        ListFilesIn(root, sub, pattern, recurse, out, cancel, counter);
     }
 }
 
@@ -167,7 +161,15 @@ void ListFiles(const std::wstring& root, const std::wstring& pattern, bool recur
                std::vector<FoundFile>& out, const std::atomic<bool>* cancel, std::atomic<size_t>* counter)
 {
     size_t first = out.size();
-    ListFilesIn(root, L"", pattern, recurse, out, cancel, counter);
+    // A work list instead of recursion: very deep folder trees cannot run
+    // out of stack. The order does not matter, the result is sorted below.
+    std::vector<std::wstring> pending{ L"" };
+    while (!pending.empty() && !IsCancelled(cancel))
+    {
+        std::wstring rel = std::move(pending.back());
+        pending.pop_back();
+        ListOneFolder(root, rel, pattern, recurse, out, pending, cancel, counter);
+    }
     std::sort(out.begin() + first, out.end(), [](const FoundFile& a, const FoundFile& b) {
         return StrCmpLogicalW(a.relPath.c_str(), b.relPath.c_str()) < 0;
     });

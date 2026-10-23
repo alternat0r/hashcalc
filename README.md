@@ -57,7 +57,7 @@ Open Command Prompt, PowerShell or Terminal and run HashCalc with options.
 
 To type just `hashcalc` from any folder, use **Settings > Add to PATH (Command Line)...** once:
 
-1. Choose a folder for HashCalc. The default is `C:\tools`.
+1. Choose a folder for HashCalc. The default is `%LOCALAPPDATA%\Programs\HashCalc`, which only you can change. If you choose a folder that other users can write to (like `C:\tools` on many PCs), HashCalc warns you first.
 2. Click **Add to PATH**. HashCalc copies `HashCalc.exe` to that folder and adds the folder to your user PATH, so no admin rights are needed.
 3. Open a **new** Command Prompt or PowerShell window and type `hashcalc -h`.
 
@@ -105,6 +105,8 @@ Useful options:
 | `-o file` | save the output to a file |
 | `-nologo` | do not show the banner line |
 | `-c file` | check files against a checksum file |
+| `-allow-unc` | with `-c`: also check network paths (`\\server\...`) in the checksum file |
+| `--` | end of options: everything after it is a file name |
 
 Checksum files work with `sha256sum` / `md5sum`. Exit code: `0` = OK, `1` = a file failed or did not match, `2` = wrong options.
 
@@ -113,6 +115,13 @@ Checksum files work with `sha256sum` / `md5sum`. Exit code: `0` = OK, `1` = a fi
 - Windows 10 or 11 (64-bit or 32-bit).
 - No runtime or installer needed.
 - On Windows 10 and Windows 11 before version 24H2, a black console window may flash for a moment when you open HashCalc from Explorer.
+
+## Security
+
+- HashCalc loads Windows DLLs only from `System32`, so a harmful DLL next to `HashCalc.exe` (for example in your Downloads folder) is not loaded.
+- `-c` skips network paths (`\\server\...`) in checksum files, because opening them sends your Windows login to that server. Use `-allow-unc` if you trust the file.
+- CSV export and **Copy All** add a `'` in front of cells that start with `=`, `+`, `-` or `@`, so Excel shows them as text, not formulas.
+- Use **SHA256** or **SHA512** to check that a file was not changed on purpose. MD5, SHA1, MD2 and MD4 are fine for spotting broken downloads, but they are not safe against attackers.
 
 ## Build from source
 
