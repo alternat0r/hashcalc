@@ -25,3 +25,12 @@ void SaveSettings(const Settings& settings);
 bool IsShellIntegrationInstalled();
 bool InstallShellIntegration();
 bool RemoveShellIntegration();
+
+// ---------------------------------------------------------------------------
+// Command line access: adds the folder of this executable to the user's PATH
+// (HKCU\Environment, no admin rights needed), so "hashcalc" works in any new
+// cmd/PowerShell window. Running programs are notified of the change.
+// ---------------------------------------------------------------------------
+bool IsInUserPath();
+bool AddToUserPath();
+bool RemoveFromUserPath();

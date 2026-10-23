@@ -18,6 +18,7 @@ BEGIN
         MENUITEM "Hash &Folder...\tCtrl+Shift+O",      IDM_FILE_FOLDER
         MENUITEM SEPARATOR
         MENUITEM "&Copy All Results\tCtrl+Shift+C",    IDM_FILE_COPYALL
+        MENUITEM "&Reset\tCtrl+R",                     IDM_FILE_RESET
         MENUITEM SEPARATOR
         MENUITEM "E&xit",                              IDM_FILE_EXIT
     END
@@ -25,6 +26,7 @@ BEGIN
     BEGIN
         MENUITEM "Always on &Top\tCtrl+T",             IDM_SETTINGS_TOPMOST
         MENUITEM "Add to Explorer &Context Menu",      IDM_SETTINGS_SHELL
+        MENUITEM "Add to &PATH (Command Line)",        IDM_SETTINGS_PATH
     END
     POPUP "&Help"
     BEGIN
@@ -40,6 +42,7 @@ BEGIN
     "O",    IDM_FILE_FOLDER,    VIRTKEY, CONTROL, SHIFT
     "C",    IDM_FILE_COPYALL,   VIRTKEY, CONTROL, SHIFT
     "T",    IDM_SETTINGS_TOPMOST, VIRTKEY, CONTROL
+    "R",    IDM_FILE_RESET,     VIRTKEY, CONTROL
     VK_F1,  IDM_HELP_HELP,      VIRTKEY
 END
 

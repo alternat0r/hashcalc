@@ -11,8 +11,10 @@
 #define IDM_FILE_FOLDER         40002
 #define IDM_FILE_COPYALL        40003
 #define IDM_FILE_EXIT           40004
+#define IDM_FILE_RESET          40005
 #define IDM_SETTINGS_SHELL      40010
 #define IDM_SETTINGS_TOPMOST    40011
+#define IDM_SETTINGS_PATH       40012
 #define IDM_HELP_HELP           40020
 #define IDM_HELP_ABOUT          40021
 

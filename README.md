@@ -6,7 +6,9 @@ A small, fast hash calculator for Windows. It works as a normal window **and** a
 
 <br clear="left">
 
-![HashCalc main window](docs/main-window.png)
+<p align="center">
+  <img src="docs/main-window.png" alt="HashCalc main window">
+</p>
 
 ## What it can do
 
@@ -19,21 +21,25 @@ A small, fast hash calculator for Windows. It works as a normal window **and** a
 - **Right-click menu in Explorer** (optional): "Calculate hash with HashCalc".
 - **Command line** for scripts, including checking files against a checksum list.
 - **Always on top** (Settings menu or Ctrl+T), so the window stays visible.
+- **Cancel** a running calculation, and **Reset** (Ctrl+R) everything back to the defaults.
+- **Add to PATH** (optional), so you can type `hashcalc` in any console window.
 
 ## How to use
 
-1. Run `HashCalc-x64.exe` (or `HashCalc-x86.exe` on 32-bit Windows).
+1. Run `HashCalc.exe` (from `dist\x64`, or `dist\x86` on 32-bit Windows).
 2. Choose a file, or just type or paste text. **Data Format** changes by itself: a path selects *File*, other text selects *Text string*. For hex input, choose *Hex string* yourself.
 3. Tick the hash types you want. **All** ticks or clears every box.
-4. Click **Calculate**.
+4. Click **Calculate**. While it works, the same button says **Cancel**, so you can stop it.
 
-HashCalc remembers the hash types you ticked for next time.
+HashCalc remembers the hash types you ticked for next time. **File > Reset** (Ctrl+R) clears everything and goes back to the default settings.
 
 ## Hash a folder
 
 Use **File > Hash Folder** or drop a folder onto the window. Tick **Include subfolders** if you need them, then click **Start**. It uses the hash types ticked in the main window.
 
-![Folder Hash window](docs/folder-hash.png)
+<p align="center">
+  <img src="docs/folder-hash.png" alt="Folder Hash window">
+</p>
 
 **Export...** saves the results as a CSV file (for Excel) or as a checksum file such as `.sha256`.
 
@@ -47,7 +53,9 @@ Turn on **Settings > Add to Explorer Context Menu**. Then you can right-click an
 
 ## Command line
 
-Open Command Prompt, PowerShell or Terminal and run HashCalc with options:
+Open Command Prompt, PowerShell or Terminal and run HashCalc with options.
+
+To type just `hashcalc` from any folder, turn on **Settings > Add to PATH (Command Line)** once. Then open a **new** console window. This adds the HashCalc folder to your own user PATH, so no admin rights are needed. Click it again to remove it.
 
 ```
 HashCalc setup.exe                          SHA256 of one file
@@ -118,7 +126,7 @@ hashcalc/
 ├─ HashCalc.sln           Visual Studio solution (open this)
 ├─ HashCalc.vcxproj       project file
 ├─ Common.props           shared build settings (small, portable Release build)
-├─ build.bat              release build, writes dist\HashCalc-<arch>.exe
+├─ build.bat              release build, writes dist\<arch>\HashCalc.exe
 ├─ src/
 │  ├─ core/               hash algorithms (Hashes) and file/folder hashing (FileHash)
 │  ├─ gui/                main window, Folder Hash window, settings and Explorer menu

@@ -100,6 +100,7 @@ std::thread g_worker;
 bool g_rowDone[kHashAlgCount] = {};      // result shown (UI thread only)
 int g_rowPercent[kHashAlgCount] = {};    // percentage currently shown, -1 = none
 std::atomic<bool> g_cancel{ false };
+bool g_userCancelled = false;            // Cancel button pressed (UI thread only)
 HFONT g_logoFont = nullptr;
 HFONT g_iconFont = nullptr;
 
@@ -309,14 +310,25 @@ void WorkerMain(HWND dlg)
     PostMessageW(dlg, WM_APP_CALC_DONE, 0, 0);
 }
 
+// Sets the cancel flag and wakes every hash thread and reader. Taking each
+// lock first ensures a thread that is about to wait cannot miss the wake-up.
+void SignalCancel()
+{
+    g_cancel = true;
+    if (!g_job)
+        return;
+    for (AlgTask& task : g_job->tasks)
+    {
+        { std::lock_guard<std::mutex> lock(task.mutex); }
+        task.cv.notify_all();
+    }
+}
+
 void StopWorker()
 {
     if (g_worker.joinable())
     {
-        g_cancel = true;
-        if (g_job)
-            for (AlgTask& task : g_job->tasks)
-                task.cv.notify_all();
+        SignalCancel();
         g_worker.join();
     }
 }
@@ -402,8 +414,10 @@ void UpdateControlStates(HWND dlg)
     if (!busy)
         UpdateAllCheckbox(dlg);
 
-    EnableWindow(GetDlgItem(dlg, IDC_CALCULATE), !busy);
-    SetDlgItemTextW(dlg, IDC_CALCULATE, busy ? L"Working..." : L"Calculate");
+    // While a calculation runs, the Calculate button becomes Cancel.
+    bool cancelling = busy && g_cancel;
+    EnableWindow(GetDlgItem(dlg, IDC_CALCULATE), !cancelling);
+    SetDlgItemTextW(dlg, IDC_CALCULATE, !busy ? L"Calculate" : cancelling ? L"Cancelling..." : L"Cancel");
 }
 
 void ClearResults(HWND dlg)
@@ -571,10 +585,24 @@ void OnDropFiles(HWND dlg, HDROP drop)
     }
 }
 
+// Cancel button: stop the running calculation. Results that already finished
+// are kept; the rest are cleared when the worker reports back (OnCalcDone).
+void OnCancel(HWND dlg)
+{
+    if (!IsBusy() || g_cancel)
+        return;
+    g_userCancelled = true;
+    SignalCancel();
+    UpdateControlStates(dlg);
+}
+
 void OnCalculate(HWND dlg)
 {
     if (IsBusy())
+    {
+        OnCancel(dlg);
         return;
+    }
 
     auto job = std::make_unique<CalcJob>();
     job->dataFormat = static_cast<int>(SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_GETCURSEL, 0, 0));
@@ -627,11 +655,29 @@ void OnCalcDone(HWND dlg)
         g_worker.join();
 
     std::unique_ptr<CalcJob> job = std::move(g_job);
-    for (bool& done : g_rowDone)
-        done = true;
+    bool cancelled = g_userCancelled;
+    g_userCancelled = false;
+    bool finished[kHashAlgCount];
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        finished[i] = g_rowDone[i];
+        g_rowDone[i] = true;
+    }
     UpdateControlStates(dlg);
     if (!job)
         return;
+
+    if (cancelled)
+    {
+        // Keep the hashes that completed, clear the ones that were stopped.
+        for (int i = 0; i < kHashAlgCount; ++i)
+        {
+            if (!job->selected[i] || finished[i]) continue;
+            SetDlgItemTextW(dlg, IDC_OUT_BASE + i, L"");
+            SetProgress(dlg, i, 0);
+        }
+        return;
+    }
 
     if (!job->error.empty())
     {
@@ -664,14 +710,17 @@ void OnHelp(HWND dlg)
         L"2. The data format follows the input: a path selects File, other text selects "
         L"Text string (UTF-8). Choose Hex string yourself for hex input.\n"
         L"3. Optionally enable HMAC and enter a key.\n"
-        L"4. Tick the algorithms you need (\"All\" toggles every one) and press Calculate.\n\n"
+        L"4. Tick the algorithms you need (\"All\" toggles every one) and press Calculate. "
+        L"While it runs, the same button cancels.\n\n"
+        L"File > Reset (Ctrl+R) clears everything and restores the default settings.\n\n"
         L"Each algorithm runs on its own thread; the bar under each result shows its progress. "
         L"Use the button next to a result to copy it to the clipboard, or \"Copy All\" for every result.\n\n"
         L"File > Hash Folder (or dropping a folder on the window) hashes every file in a folder "
         L"with the algorithms ticked here, and can export the results as CSV or a checksum file.\n\n"
         L"Settings > Add to Explorer Context Menu adds \"Calculate hash with HashCalc\" for files "
         L"and \"Hash folder with HashCalc\" for folders. On Windows 11 they are under \"Show more options\".\n\n"
-        L"Command line: run \"HashCalc -h\" in a console for all options.",
+        L"Command line: run \"HashCalc -h\" in a console for all options. "
+        L"Settings > Add to PATH lets you type \"hashcalc\" in any new console window.",
         L"HashCalc Help", MB_ICONINFORMATION);
 }
 
@@ -727,8 +776,70 @@ void OnToggleAlwaysOnTop(HWND dlg)
     SaveSettings(settings);
 }
 
+// File > Reset: back to the state of a first start - empty input, default
+// algorithm (SHA256), designed window size, not on top, default saved settings.
+// The Explorer context menu is a separate choice and is left as it is.
+void OnReset(HWND dlg)
+{
+    if (IsBusy())
+        return;
+
+    SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_SETCURSEL, DataFile, 0);
+    SetDlgItemTextW(dlg, IDC_DATA, L"");
+    CheckDlgButton(dlg, IDC_HMAC, BST_UNCHECKED);
+    SendDlgItemMessageW(dlg, IDC_KEYFORMAT, CB_SETCURSEL, KeyHex, 0);
+    SetDlgItemTextW(dlg, IDC_KEY, L"");
+
+    const Settings defaults;
+    for (int i = 0; i < kHashAlgCount; ++i)
+        CheckDlgButton(dlg, IDC_CHK_BASE + i, (defaults.algorithms >> i) & 1 ? BST_CHECKED : BST_UNCHECKED);
+    ClearResults(dlg);
+
+    SIZE size = g_layout.InitialWindowSize();
+    SetWindowPos(dlg, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ApplyAlwaysOnTop(dlg, false);
+
+    SaveSettings(defaults);
+    UpdateControlStates(dlg);
+}
+
+// Settings > Add to PATH: lets "hashcalc" (the file name of this exe) run from
+// any new console window.
+void OnTogglePath(HWND dlg)
+{
+    if (IsInUserPath())
+    {
+        if (!RemoveFromUserPath())
+            MessageBoxW(dlg, L"Could not remove HashCalc from your PATH.", L"HashCalc", MB_ICONERROR);
+        return;
+    }
+    if (!AddToUserPath())
+    {
+        MessageBoxW(dlg, L"Could not add HashCalc to your PATH.", L"HashCalc", MB_ICONERROR);
+        return;
+    }
+
+    std::wstring exe = ExePath();
+    size_t slash = exe.find_last_of(L'\\');
+    std::wstring folder = exe.substr(0, slash);
+    std::wstring command = exe.substr(slash + 1);
+    size_t dot = command.find_last_of(L'.');
+    if (dot != std::wstring::npos)
+        command.resize(dot);
+    CharLowerBuffW(command.data(), static_cast<DWORD>(command.size()));
+
+    MessageBoxW(dlg, (L"Added to your PATH:\n" + folder + L"\n\n"
+        L"Open a new Command Prompt or PowerShell window and type:\n\n"
+        L"    " + command + L" -h\n\n"
+        L"Windows that are already open keep the old PATH. "
+        L"If you move HashCalc, add it again.").c_str(),
+        L"HashCalc", MB_ICONINFORMATION);
+}
+
 void OnInitMenuPopup(HWND dlg, HMENU menu)
 {
+    EnableMenuItem(menu, IDM_FILE_RESET, MF_BYCOMMAND | (IsBusy() ? MF_GRAYED : MF_ENABLED));
+    CheckMenuItem(menu, IDM_SETTINGS_PATH, MF_BYCOMMAND | (IsInUserPath() ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_TOPMOST, MF_BYCOMMAND | (IsAlwaysOnTop(dlg) ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_SHELL, MF_BYCOMMAND |
         (IsShellIntegrationInstalled() ? MF_CHECKED : MF_UNCHECKED));
@@ -916,11 +1027,17 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
         case IDM_FILE_FOLDER:
             ShowFolderHashWindow(dlg, L"", false);
             return TRUE;
+        case IDM_FILE_RESET:
+            OnReset(dlg);
+            return TRUE;
         case IDM_SETTINGS_SHELL:
             OnToggleShellIntegration(dlg);
             return TRUE;
         case IDM_SETTINGS_TOPMOST:
             OnToggleAlwaysOnTop(dlg);
+            return TRUE;
+        case IDM_SETTINGS_PATH:
+            OnTogglePath(dlg);
             return TRUE;
         case IDC_HELPBTN:
         case IDM_HELP_HELP:

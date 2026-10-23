@@ -7,7 +7,8 @@ rem    build.bat x86        build 32-bit
 rem    build.bat all        build x64 and x86
 rem
 rem  Each run increments the minor version in src\version.h (restored if the build
-rem  fails) and copies the portable executable to dist\HashCalc-<arch>.exe.
+rem  fails) and copies the portable executable to dist\<arch>\HashCalc.exe
+rem  (the name stays HashCalc.exe so "hashcalc" works once it is on the PATH).
 rem  The one executable is both the GUI and the command line tool.
 rem ===========================================================================
 setlocal EnableExtensions EnableDelayedExpansion
@@ -68,9 +69,10 @@ for %%p in (%TARGETS%) do (
 
     set "ARCH=%%p"
     if /i "%%p"=="Win32" set "ARCH=x86"
-    copy /y "build\%%p\Release\HashCalc.exe" "dist\HashCalc-!ARCH!.exe" >nul
+    if not exist "dist\!ARCH!" mkdir "dist\!ARCH!"
+    copy /y "build\%%p\Release\HashCalc.exe" "dist\!ARCH!\HashCalc.exe" >nul
     if errorlevel 1 goto :failed
-    for %%f in ("dist\HashCalc-!ARCH!.exe") do echo   -^> %%~ff  (%%~zf bytes^)
+    for %%f in ("dist\!ARCH!\HashCalc.exe") do echo   -^> %%~ff  (%%~zf bytes^)
     echo.
 )
 

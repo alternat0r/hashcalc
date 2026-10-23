@@ -2,6 +2,7 @@
 
 #include <shlobj.h>
 #include <string>
+#include <vector>
 
 #include "common/Util.h"
 
@@ -46,6 +47,82 @@ bool SetString(HKEY root, const std::wstring& subKey, const wchar_t* name, const
 {
     return RegSetKeyValueW(root, subKey.c_str(), name, REG_SZ, value.c_str(),
         static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+}
+
+// --- User PATH -------------------------------------------------------------
+const wchar_t kEnvironmentKey[] = L"Environment";
+
+std::wstring ExeFolder()
+{
+    std::wstring path = ExePath();
+    return path.substr(0, path.find_last_of(L'\\'));
+}
+
+// For comparing PATH entries: expand %VARS%, drop quotes, spaces and a
+// trailing backslash, ignore case.
+std::wstring NormalizeFolder(std::wstring folder)
+{
+    wchar_t expanded[4096];
+    DWORD n = ExpandEnvironmentStringsW(folder.c_str(), expanded, ARRAYSIZE(expanded));
+    if (n > 0 && n <= ARRAYSIZE(expanded))
+        folder = expanded;
+    size_t first = folder.find_first_not_of(L" \t\"");
+    size_t last = folder.find_last_not_of(L" \t\"");
+    folder = first == std::wstring::npos ? L"" : folder.substr(first, last - first + 1);
+    while (folder.size() > 3 && (folder.back() == L'\\' || folder.back() == L'/'))
+        folder.pop_back();
+    CharLowerBuffW(folder.data(), static_cast<DWORD>(folder.size()));
+    return folder;
+}
+
+// Reads HKCU\Environment\Path without expanding it. A missing value is empty.
+bool ReadUserPath(std::wstring& value, DWORD& type)
+{
+    value.clear();
+    type = REG_EXPAND_SZ;
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kEnvironmentKey, 0, KEY_READ, &key) != ERROR_SUCCESS)
+        return true;
+    DWORD size = 0;
+    LSTATUS status = RegQueryValueExW(key, L"Path", nullptr, &type, nullptr, &size);
+    if (status == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ))
+    {
+        std::wstring buffer(size / sizeof(wchar_t) + 1, L'\0');
+        status = RegQueryValueExW(key, L"Path", nullptr, &type, reinterpret_cast<BYTE*>(buffer.data()), &size);
+        if (status == ERROR_SUCCESS)
+            value.assign(buffer.c_str());
+    }
+    RegCloseKey(key);
+    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
+}
+
+// Writes the user PATH (keeping its registry type) and tells Explorer and other
+// programs, so new console windows get the updated PATH.
+bool WriteUserPath(const std::wstring& value, DWORD type)
+{
+    LSTATUS status = value.empty()
+        ? RegDeleteKeyValueW(HKEY_CURRENT_USER, kEnvironmentKey, L"Path")
+        : RegSetKeyValueW(HKEY_CURRENT_USER, kEnvironmentKey, L"Path", type, value.c_str(),
+              static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND)
+        return false;
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"Environment"),
+        SMTO_ABORTIFHUNG, 5000, nullptr);
+    return true;
+}
+
+std::vector<std::wstring> SplitPath(const std::wstring& value)
+{
+    std::vector<std::wstring> entries;
+    size_t start = 0;
+    while (start <= value.size())
+    {
+        size_t end = value.find(L';', start);
+        if (end == std::wstring::npos) end = value.size();
+        if (end > start) entries.push_back(value.substr(start, end - start));
+        start = end + 1;
+    }
+    return entries;
 }
 
 } // namespace
@@ -105,6 +182,56 @@ bool InstallShellIntegration()
     }
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return ok;
+}
+
+bool IsInUserPath()
+{
+    std::wstring value;
+    DWORD type;
+    if (!ReadUserPath(value, type))
+        return false;
+    std::wstring folder = NormalizeFolder(ExeFolder());
+    for (const std::wstring& entry : SplitPath(value))
+        if (NormalizeFolder(entry) == folder)
+            return true;
+    return false;
+}
+
+bool AddToUserPath()
+{
+    if (IsInUserPath())
+        return true;
+    std::wstring value;
+    DWORD type;
+    if (!ReadUserPath(value, type))
+        return false;
+    while (!value.empty() && value.back() == L';')
+        value.pop_back();
+    if (!value.empty())
+        value += L';';
+    value += ExeFolder();
+    return WriteUserPath(value, type);
+}
+
+bool RemoveFromUserPath()
+{
+    std::wstring value;
+    DWORD type;
+    if (!ReadUserPath(value, type))
+        return false;
+    std::wstring folder = NormalizeFolder(ExeFolder());
+    std::wstring kept;
+    bool removed = false;
+    for (const std::wstring& entry : SplitPath(value))
+    {
+        if (NormalizeFolder(entry) == folder)
+        {
+            removed = true;
+            continue;
+        }
+        kept += (kept.empty() ? L"" : L";") + entry;
+    }
+    return !removed || WriteUserPath(kept, type);
 }
 
 bool RemoveShellIntegration()
