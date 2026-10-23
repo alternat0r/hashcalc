@@ -1,0 +1,157 @@
+#include "resource.h"
+#include <windows.h>
+#include <commctrl.h>
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+#include "version.rc2"
+
+// File and window icon (also shown next to the Explorer context menu entries).
+// The first icon resource is the one Explorer shows for the .exe.
+IDI_APP ICON "HashCalc.ico"
+
+IDR_MAINMENU MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Open File...\tCtrl+O",              IDM_FILE_OPEN
+        MENUITEM "Hash &Folder...\tCtrl+Shift+O",      IDM_FILE_FOLDER
+        MENUITEM SEPARATOR
+        MENUITEM "&Copy All Results\tCtrl+Shift+C",    IDM_FILE_COPYALL
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit",                              IDM_FILE_EXIT
+    END
+    POPUP "&Settings"
+    BEGIN
+        MENUITEM "Always on &Top\tCtrl+T",             IDM_SETTINGS_TOPMOST
+        MENUITEM "Add to Explorer &Context Menu",      IDM_SETTINGS_SHELL
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&Help\tF1",                          IDM_HELP_HELP
+        MENUITEM SEPARATOR
+        MENUITEM "&About HashCalc",                    IDM_HELP_ABOUT
+    END
+END
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+    "O",    IDM_FILE_OPEN,      VIRTKEY, CONTROL
+    "O",    IDM_FILE_FOLDER,    VIRTKEY, CONTROL, SHIFT
+    "C",    IDM_FILE_COPYALL,   VIRTKEY, CONTROL, SHIFT
+    "T",    IDM_SETTINGS_TOPMOST, VIRTKEY, CONTROL
+    VK_F1,  IDM_HELP_HELP,      VIRTKEY
+END
+
+// Resizable horizontally only (height is locked in WM_GETMINMAXINFO), no maximize.
+IDD_HASHCALC DIALOGEX 0, 0, 250, 347
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME
+EXSTYLE WS_EX_ACCEPTFILES | WS_EX_APPWINDOW
+CAPTION "HashCalc"
+MENU IDR_MAINMENU
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    // --- Input -----------------------------------------------------------
+    LTEXT           "Data Format:", IDC_STATIC, 7, 6, 52, 8
+    COMBOBOX        IDC_DATAFORMAT, 7, 16, 52, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Data:", IDC_STATIC, 64, 6, 40, 8
+    EDITTEXT        IDC_DATA, 64, 16, 160, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_BROWSE, 227, 16, 16, 13
+
+    AUTOCHECKBOX    "HMAC", IDC_HMAC, 7, 43, 52, 10
+    LTEXT           "Key Format:", IDC_STATIC, 64, 32, 50, 8
+    COMBOBOX        IDC_KEYFORMAT, 64, 41, 50, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Key:", IDC_STATIC, 118, 32, 40, 8
+    EDITTEXT        IDC_KEY, 118, 41, 125, 13, ES_AUTOHSCROLL
+
+    CONTROL         "All", IDC_CHK_ALL, "Button", BS_3STATE | WS_TABSTOP, 7, 57, 30, 10
+    CONTROL         "", IDC_SEP_TOP, "Static", SS_ETCHEDHORZ, 40, 62, 159, 1
+    PUSHBUTTON      "Copy All", IDC_COPY_ALL, 203, 55, 40, 12
+
+    // --- Hash rows: checkbox, output, copy button, progress bar ----------
+    // Row i starts at y = 68 + 18*i
+    AUTOCHECKBOX    "MD5", IDC_CHK_MD5, 7, 69, 52, 10
+    EDITTEXT        IDC_OUT_MD5, 64, 68, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_MD5, 227, 68, 16, 12
+    CONTROL         "", IDC_PROG_MD5, "msctls_progress32", PBS_SMOOTH, 64, 81, 161, 3
+    AUTOCHECKBOX    "MD4", IDC_CHK_MD4, 7, 87, 52, 10
+    EDITTEXT        IDC_OUT_MD4, 64, 86, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_MD4, 227, 86, 16, 12
+    CONTROL         "", IDC_PROG_MD4, "msctls_progress32", PBS_SMOOTH, 64, 99, 161, 3
+    AUTOCHECKBOX    "SHA1", IDC_CHK_SHA1, 7, 105, 52, 10
+    EDITTEXT        IDC_OUT_SHA1, 64, 104, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_SHA1, 227, 104, 16, 12
+    CONTROL         "", IDC_PROG_SHA1, "msctls_progress32", PBS_SMOOTH, 64, 117, 161, 3
+    AUTOCHECKBOX    "SHA256", IDC_CHK_SHA256, 7, 123, 52, 10
+    EDITTEXT        IDC_OUT_SHA256, 64, 122, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_SHA256, 227, 122, 16, 12
+    CONTROL         "", IDC_PROG_SHA256, "msctls_progress32", PBS_SMOOTH, 64, 135, 161, 3
+    AUTOCHECKBOX    "SHA384", IDC_CHK_SHA384, 7, 141, 52, 10
+    EDITTEXT        IDC_OUT_SHA384, 64, 140, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_SHA384, 227, 140, 16, 12
+    CONTROL         "", IDC_PROG_SHA384, "msctls_progress32", PBS_SMOOTH, 64, 153, 161, 3
+    AUTOCHECKBOX    "SHA512", IDC_CHK_SHA512, 7, 159, 52, 10
+    EDITTEXT        IDC_OUT_SHA512, 64, 158, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_SHA512, 227, 158, 16, 12
+    CONTROL         "", IDC_PROG_SHA512, "msctls_progress32", PBS_SMOOTH, 64, 171, 161, 3
+    AUTOCHECKBOX    "RIPEMD160", IDC_CHK_RIPEMD160, 7, 177, 52, 10
+    EDITTEXT        IDC_OUT_RIPEMD160, 64, 176, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_RIPEMD160, 227, 176, 16, 12
+    CONTROL         "", IDC_PROG_RIPEMD160, "msctls_progress32", PBS_SMOOTH, 64, 189, 161, 3
+    AUTOCHECKBOX    "PANAMA", IDC_CHK_PANAMA, 7, 195, 52, 10
+    EDITTEXT        IDC_OUT_PANAMA, 64, 194, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_PANAMA, 227, 194, 16, 12
+    CONTROL         "", IDC_PROG_PANAMA, "msctls_progress32", PBS_SMOOTH, 64, 207, 161, 3
+    AUTOCHECKBOX    "TIGER", IDC_CHK_TIGER, 7, 213, 52, 10
+    EDITTEXT        IDC_OUT_TIGER, 64, 212, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_TIGER, 227, 212, 16, 12
+    CONTROL         "", IDC_PROG_TIGER, "msctls_progress32", PBS_SMOOTH, 64, 225, 161, 3
+    AUTOCHECKBOX    "MD2", IDC_CHK_MD2, 7, 231, 52, 10
+    EDITTEXT        IDC_OUT_MD2, 64, 230, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_MD2, 227, 230, 16, 12
+    CONTROL         "", IDC_PROG_MD2, "msctls_progress32", PBS_SMOOTH, 64, 243, 161, 3
+    AUTOCHECKBOX    "ADLER32", IDC_CHK_ADLER32, 7, 249, 52, 10
+    EDITTEXT        IDC_OUT_ADLER32, 64, 248, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_ADLER32, 227, 248, 16, 12
+    CONTROL         "", IDC_PROG_ADLER32, "msctls_progress32", PBS_SMOOTH, 64, 261, 161, 3
+    AUTOCHECKBOX    "CRC32", IDC_CHK_CRC32, 7, 267, 52, 10
+    EDITTEXT        IDC_OUT_CRC32, 64, 266, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_CRC32, 227, 266, 16, 12
+    CONTROL         "", IDC_PROG_CRC32, "msctls_progress32", PBS_SMOOTH, 64, 279, 161, 3
+
+    CONTROL         "", IDC_SEP_MID, "Static", SS_ETCHEDHORZ, 7, 288, 236, 1
+
+    CONTROL         "eDonkey/ eMule", IDC_CHK_EDONKEY, "Button", BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP, 7, 293, 52, 18
+    EDITTEXT        IDC_OUT_EDONKEY, 64, 295, 161, 12, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "", IDC_COPY_EDONKEY, 227, 295, 16, 12
+    CONTROL         "", IDC_PROG_EDONKEY, "msctls_progress32", PBS_SMOOTH, 64, 308, 161, 3
+
+    CONTROL         "", IDC_SEP_BOTTOM, "Static", SS_ETCHEDHORZ, 7, 317, 236, 1
+
+    // --- Bottom bar --------------------------------------------------------
+    LTEXT           "HashCalc", IDC_LOGO, 7, 328, 70, 10
+    DEFPUSHBUTTON   "Calculate", IDC_CALCULATE, 85, 325, 50, 15
+    PUSHBUTTON      "Close", IDCANCEL, 139, 325, 50, 15
+    PUSHBUTTON      "Help", IDC_HELPBTN, 193, 325, 50, 15
+END
+
+// Folder (bulk) hashing window: resizable, controls anchored in code.
+IDD_FOLDERHASH DIALOGEX 0, 0, 380, 240
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME
+EXSTYLE WS_EX_ACCEPTFILES
+CAPTION "Folder Hash"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "Folder:", IDC_STATIC, 7, 9, 26, 8
+    EDITTEXT        IDC_F_FOLDER, 36, 7, 315, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_F_BROWSE, 355, 7, 18, 13
+    AUTOCHECKBOX    "Include subfolders", IDC_F_RECURSE, 7, 25, 80, 10
+    LTEXT           "", IDC_F_ALGS, 92, 26, 281, 8, SS_ENDELLIPSIS
+    CONTROL         "", IDC_F_LIST, "SysListView32", LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 7, 40, 366, 150
+    CONTROL         "", IDC_F_PROGRESS, "msctls_progress32", PBS_SMOOTH, 7, 195, 366, 6
+    LTEXT           "", IDC_F_STATUS, 7, 205, 366, 8, SS_ENDELLIPSIS
+    DEFPUSHBUTTON   "Start", IDC_F_START, 155, 219, 50, 14
+    PUSHBUTTON      "Copy All", IDC_F_COPY, 209, 219, 50, 14
+    PUSHBUTTON      "Export...", IDC_F_EXPORT, 263, 219, 50, 14
+    PUSHBUTTON      "Close", IDCANCEL, 323, 219, 50, 14
+END

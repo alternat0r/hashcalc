@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Merged into the manifest the linker generates (common controls v6, DPI awareness). -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- HashCalc.exe is a console program so the command line works properly.
+       Windows 11 24H2+: do not create a console window when it is started
+       outside a console (Explorer, shortcuts, context menu) - it then runs as
+       a GUI. Older Windows ignore this; main.cpp hides that console instead. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
+    </windowsSettings>
+  </application>
+</assembly>

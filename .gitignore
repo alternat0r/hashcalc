@@ -1,0 +1,14 @@
+# Build output (build.bat / Visual Studio)
+build/
+dist/
+
+# Visual Studio
+.vs/
+*.user
+*.aps
+
+# build.bat temporary file
+version.h.bak
+
+# Python
+__pycache__/

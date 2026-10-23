@@ -1,0 +1,1208 @@
+#include <windows.h>
+#include <commctrl.h>
+#include <commdlg.h>
+#include <objbase.h>
+#include <shellapi.h>
+
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "Cli.h"
+#include "FolderHash.h"
+#include "Hashes.h"
+#include "resource.h"
+#include "Settings.h"
+#include "Util.h"
+#include "version.h"
+
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' " \
+    "version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
+namespace {
+
+constexpr UINT WM_APP_CALC_DONE = WM_APP + 1;
+constexpr UINT WM_APP_TASK_DONE = WM_APP + 2;   // wParam = algorithm index
+constexpr UINT WM_APP_OPEN_FOLDER = WM_APP + 3; // startup: open the folder window
+constexpr size_t kReadChunkSize = 1 << 20;   // bytes per chunk handed to the hash threads
+constexpr size_t kMaxQueuedChunks = 16;      // per algorithm; bounds memory use
+constexpr int kProgressRange = 1000;
+constexpr UINT_PTR kProgressTimer = 1;
+constexpr UINT_PTR kCopyAllTimer = 2;
+constexpr UINT_PTR kCopyTimerBase = 100;     // + algorithm index
+constexpr UINT kProgressIntervalMs = 100;
+constexpr UINT kCopyFeedbackMs = 1000;
+constexpr UINT kSysCmdAbout = 0x0110;        // system menu items; below 0xF000, low 4 bits clear
+constexpr UINT kSysCmdTopmost = 0x0120;
+
+// Segoe MDL2 Assets glyphs
+constexpr wchar_t kGlyphCopy[] = L"\xE8C8";
+constexpr wchar_t kGlyphDone[] = L"\xE73E";
+
+// Combo box item indices
+enum DataFormat { DataFile = 0, DataText = 1, DataHex = 2 };
+enum KeyFormat { KeyText = 0, KeyHex = 1 };
+
+using Chunk = std::shared_ptr<const std::vector<BYTE>>;
+
+// One selected algorithm, running on its own thread and fed from a bounded queue.
+struct AlgTask
+{
+    std::unique_ptr<Hasher> hasher;
+    std::thread thread;
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<Chunk> queue;
+    bool endOfInput = false;
+
+    std::atomic<uint64_t> processed{ 0 };
+    std::wstring result;
+};
+
+struct CalcJob
+{
+    // Input (captured from the UI before the worker starts)
+    int dataFormat = DataFile;
+    std::wstring data;
+    bool hmac = false;
+    int keyFormat = KeyHex;
+    std::wstring key;
+    bool selected[kHashAlgCount] = {};
+
+    // Progress (read by the UI thread)
+    std::atomic<uint64_t> totalBytes{ 0 };
+
+    // Output (filled by the worker threads)
+    AlgTask tasks[kHashAlgCount];
+    std::wstring error;
+};
+
+// What to do right after startup (from the command line / Explorer).
+struct StartupArgs
+{
+    std::wstring file;     // hash this file
+    std::wstring folder;   // open the folder window and hash this folder
+};
+
+HWND g_dlg = nullptr;
+StartupArgs g_startup;
+AnchorLayout g_layout;
+std::unique_ptr<CalcJob> g_job;
+std::thread g_worker;
+bool g_rowDone[kHashAlgCount] = {};      // result shown (UI thread only)
+int g_rowPercent[kHashAlgCount] = {};    // percentage currently shown, -1 = none
+std::atomic<bool> g_cancel{ false };
+HFONT g_logoFont = nullptr;
+HFONT g_iconFont = nullptr;
+
+// ---------------------------------------------------------------------------
+// Worker threads
+// ---------------------------------------------------------------------------
+
+// Runs on one thread per selected algorithm.
+void HashThread(AlgTask& task, int alg)
+{
+    try
+    {
+        for (;;)
+        {
+            Chunk chunk;
+            {
+                std::unique_lock<std::mutex> lock(task.mutex);
+                task.cv.wait(lock, [&] { return !task.queue.empty() || task.endOfInput || g_cancel; });
+                if (g_cancel)
+                    return;
+                if (task.queue.empty())
+                    break; // end of input
+                chunk = std::move(task.queue.front());
+                task.queue.pop_front();
+            }
+            task.cv.notify_all(); // wake the reader if it waits for queue space
+
+            task.hasher->Update(chunk->data(), chunk->size());
+            task.processed += chunk->size();
+        }
+        task.result = ToHex(task.hasher->Finish());
+    }
+    catch (const std::exception&)
+    {
+        task.result = L"(error)";
+    }
+    // Show this result right away instead of waiting for slower algorithms.
+    if (!g_cancel)
+        PostMessageW(g_dlg, WM_APP_TASK_DONE, alg, 0);
+}
+
+// Algorithms slow enough to throttle the others (MD2 runs at ~10 MB/s) read
+// the input in their own pass instead of sharing the main reader.
+bool RunsOnOwnPass(HashAlg alg)
+{
+    return alg == HashAlg::MD2;
+}
+
+using TaskGroup = std::vector<AlgTask*>;
+
+// Hands a chunk to every algorithm in the group, waiting while a queue is full.
+void Distribute(const TaskGroup& group, const Chunk& chunk)
+{
+    for (AlgTask* task : group)
+    {
+        std::unique_lock<std::mutex> lock(task->mutex);
+        task->cv.wait(lock, [&] { return task->queue.size() < kMaxQueuedChunks || g_cancel; });
+        if (g_cancel) return;
+        task->queue.push_back(chunk);
+        lock.unlock();
+        task->cv.notify_all();
+    }
+}
+
+// Reads the input once and feeds it to the group's hash threads.
+// Returns an error message or "".
+std::wstring FeedInput(CalcJob& job, const TaskGroup& group)
+{
+    if (job.dataFormat != DataFile)
+    {
+        auto bytes = std::make_shared<std::vector<BYTE>>();
+        if (job.dataFormat == DataHex)
+        {
+            if (!ParseHex(job.data, *bytes))
+                return L"The data is not a valid hex string.";
+        }
+        else
+            *bytes = ToUtf8(job.data);
+        job.totalBytes = bytes->size();
+        Distribute(group, bytes);
+        return L"";
+    }
+
+    HANDLE file = CreateFileW(LongPath(job.data).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return L"Cannot open file:\n" + job.data + L"\n\n" + ErrorMessage(GetLastError());
+
+    LARGE_INTEGER size = {};
+    if (GetFileSizeEx(file, &size))
+        job.totalBytes = static_cast<uint64_t>(size.QuadPart);
+
+    std::wstring error;
+    while (!g_cancel)
+    {
+        auto buffer = std::make_shared<std::vector<BYTE>>(kReadChunkSize);
+        DWORD read = 0;
+        if (!ReadFile(file, buffer->data(), static_cast<DWORD>(buffer->size()), &read, nullptr))
+        {
+            error = L"Error reading file:\n" + job.data + L"\n\n" + ErrorMessage(GetLastError());
+            break;
+        }
+        if (read == 0)
+            break;
+        buffer->resize(read);
+        Distribute(group, buffer);
+    }
+    CloseHandle(file);
+    return error;
+}
+
+void RunJob(CalcJob& job)
+{
+    std::vector<BYTE> key;
+    const std::vector<BYTE>* keyPtr = nullptr;
+    if (job.hmac)
+    {
+        if (job.keyFormat == KeyHex)
+        {
+            if (!ParseHex(job.key, key))
+            {
+                job.error = L"The HMAC key is not a valid hex string.";
+                return;
+            }
+        }
+        else
+            key = ToUtf8(job.key);
+        keyPtr = &key;
+    }
+
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        if (!job.selected[i]) continue;
+        HashAlg alg = static_cast<HashAlg>(i);
+        AlgTask& task = job.tasks[i];
+        try
+        {
+            task.hasher = CreateHasher(alg, keyPtr);
+            if (!task.hasher)
+                task.result = IsImplemented(alg) ? L"(HMAC not supported)" : L"(not implemented)";
+        }
+        catch (const std::exception&)
+        {
+            task.result = L"(error)";
+        }
+    }
+
+    // One shared pass for the fast algorithms, plus a separate pass for each slow one.
+    std::vector<TaskGroup> groups(1);
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        AlgTask& task = job.tasks[i];
+        if (!task.hasher) continue;
+        task.thread = std::thread(HashThread, std::ref(task), i);
+        if (RunsOnOwnPass(static_cast<HashAlg>(i)))
+            groups.push_back({ &task });
+        else
+            groups[0].push_back(&task);
+    }
+
+    std::vector<std::wstring> errors(groups.size());
+    std::vector<std::thread> readers;
+    for (size_t g = 0; g < groups.size(); ++g)
+    {
+        if (groups[g].empty()) continue;
+        readers.emplace_back([&, g] {
+            errors[g] = FeedInput(job, groups[g]);
+            if (!errors[g].empty())
+            {
+                g_cancel = true; // abort all hash threads; their results are meaningless
+                for (AlgTask& task : job.tasks)
+                    task.cv.notify_all();
+            }
+            // Let this group finish now rather than waiting for slower passes.
+            for (AlgTask* task : groups[g])
+            {
+                {
+                    std::lock_guard<std::mutex> lock(task->mutex);
+                    task->endOfInput = true;
+                }
+                task->cv.notify_all();
+            }
+        });
+    }
+    for (std::thread& reader : readers)
+        reader.join();
+    for (AlgTask& task : job.tasks)
+        if (task.thread.joinable())
+            task.thread.join();
+
+    for (const std::wstring& e : errors)
+        if (job.error.empty())
+            job.error = e;
+}
+
+void WorkerMain(HWND dlg)
+{
+    try
+    {
+        RunJob(*g_job);
+    }
+    catch (const std::exception& e)
+    {
+        std::string what = e.what();
+        g_job->error = L"Hash calculation failed: " + std::wstring(what.begin(), what.end());
+    }
+    PostMessageW(dlg, WM_APP_CALC_DONE, 0, 0);
+}
+
+void StopWorker()
+{
+    if (g_worker.joinable())
+    {
+        g_cancel = true;
+        if (g_job)
+            for (AlgTask& task : g_job->tasks)
+                task.cv.notify_all();
+        g_worker.join();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+bool IsChecked(HWND dlg, int id)
+{
+    return IsDlgButtonChecked(dlg, id) == BST_CHECKED;
+}
+
+bool IsBusy()
+{
+    return g_worker.joinable();
+}
+
+// Sets a progress bar without the themed "glide" animation, which lags far
+// behind for quick jobs. Moving backwards is not animated, so overshoot by
+// one and step back (temporarily widening the range when setting 100%).
+void SetProgress(HWND dlg, int alg, int pos)
+{
+    HWND bar = GetDlgItem(dlg, IDC_PROG_BASE + alg);
+    if (SendMessageW(bar, PBM_GETPOS, 0, 0) == pos)
+        return;
+    if (pos >= kProgressRange)
+    {
+        SendMessageW(bar, PBM_SETRANGE32, 0, kProgressRange + 1);
+        SendMessageW(bar, PBM_SETPOS, kProgressRange + 1, 0);
+        SendMessageW(bar, PBM_SETPOS, kProgressRange, 0);
+        SendMessageW(bar, PBM_SETRANGE32, 0, kProgressRange);
+    }
+    else
+    {
+        SendMessageW(bar, PBM_SETPOS, pos + 1, 0);
+        SendMessageW(bar, PBM_SETPOS, pos, 0);
+    }
+}
+
+// Reflects the hash checkboxes in the "All" checkbox (checked / partial / unchecked).
+void UpdateAllCheckbox(HWND dlg)
+{
+    int enabled = 0, checked = 0;
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        if (!IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i))) continue;
+        ++enabled;
+        if (IsChecked(dlg, IDC_CHK_BASE + i)) ++checked;
+    }
+    UINT state = checked == 0 ? BST_UNCHECKED : checked == enabled ? BST_CHECKED : BST_INDETERMINATE;
+    CheckDlgButton(dlg, IDC_CHK_ALL, state);
+}
+
+void OnCheckAll(HWND dlg)
+{
+    // Fully checked -> clear all; unchecked or partial -> check all
+    UINT state = IsDlgButtonChecked(dlg, IDC_CHK_ALL) == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED;
+    for (int i = 0; i < kHashAlgCount; ++i)
+        if (IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i)))
+            CheckDlgButton(dlg, IDC_CHK_BASE + i, state);
+    UpdateAllCheckbox(dlg);
+}
+
+void UpdateControlStates(HWND dlg)
+{
+    bool busy = IsBusy();
+    bool isFile = SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_GETCURSEL, 0, 0) == DataFile;
+    bool hmac = IsChecked(dlg, IDC_HMAC);
+
+    EnableWindow(GetDlgItem(dlg, IDC_DATAFORMAT), !busy);
+    EnableWindow(GetDlgItem(dlg, IDC_DATA), !busy);
+    EnableWindow(GetDlgItem(dlg, IDC_BROWSE), !busy && isFile);
+    EnableWindow(GetDlgItem(dlg, IDC_HMAC), !busy);
+    EnableWindow(GetDlgItem(dlg, IDC_KEYFORMAT), !busy && hmac);
+    EnableWindow(GetDlgItem(dlg, IDC_KEY), !busy && hmac);
+
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        bool usable = !hmac || SupportsHmac(static_cast<HashAlg>(i));
+        EnableWindow(GetDlgItem(dlg, IDC_CHK_BASE + i), !busy && usable);
+    }
+    EnableWindow(GetDlgItem(dlg, IDC_CHK_ALL), !busy);
+    if (!busy)
+        UpdateAllCheckbox(dlg);
+
+    EnableWindow(GetDlgItem(dlg, IDC_CALCULATE), !busy);
+    SetDlgItemTextW(dlg, IDC_CALCULATE, busy ? L"Working..." : L"Calculate");
+}
+
+void ClearResults(HWND dlg)
+{
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        SetDlgItemTextW(dlg, IDC_OUT_BASE + i, L"");
+        SetProgress(dlg, i, 0);
+    }
+}
+
+// While a row is calculating, its output box shows the percentage (in grey,
+// see WM_CTLCOLORSTATIC) until the hash replaces it.
+void ShowPercent(HWND dlg, int alg, int percent)
+{
+    if (g_rowDone[alg] || g_rowPercent[alg] == percent)
+        return;
+    g_rowPercent[alg] = percent;
+    SetDlgItemTextW(dlg, IDC_OUT_BASE + alg, (std::to_wstring(percent) + L"%").c_str());
+}
+
+// Called on a timer while a calculation runs.
+void RefreshProgress(HWND dlg)
+{
+    if (!g_job)
+        return;
+    uint64_t total = g_job->totalBytes;
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        if (!g_job->selected[i] || g_rowDone[i]) continue;
+        uint64_t done = g_job->tasks[i].processed;
+        int pos = total ? static_cast<int>(std::min<uint64_t>(done, total) * kProgressRange / total) : 0;
+        SetProgress(dlg, i, pos);
+        ShowPercent(dlg, i, std::min(pos * 100 / kProgressRange, 99));   // 100% = the result itself
+    }
+}
+
+bool IsShowingPercent(int alg)
+{
+    return IsBusy() && g_job && g_job->selected[alg] && !g_rowDone[alg];
+}
+
+void OnCopy(HWND dlg, int alg)
+{
+    if (!CopyToClipboard(dlg, GetDlgText(dlg, IDC_OUT_BASE + alg)))
+        return;
+
+    // Brief checkmark as feedback
+    SetDlgItemTextW(dlg, IDC_COPY_BASE + alg, kGlyphDone);
+    SetTimer(dlg, kCopyTimerBase + alg, kCopyFeedbackMs, nullptr);
+}
+
+// Copies the input description followed by one "NAME: hash" line per result.
+// The HMAC key is deliberately left out.
+void OnCopyAll(HWND dlg)
+{
+    std::wstring results;
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        std::wstring value = GetDlgText(dlg, IDC_OUT_BASE + i);
+        if (value.empty()) continue;
+        results += HashAlgName(static_cast<HashAlg>(i));
+        results += L": " + value + L"\r\n";
+    }
+    if (results.empty())
+        return;
+
+    static const wchar_t* const kFormatNames[] = { L"File", L"Text", L"Hex" };
+    int format = static_cast<int>(SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_GETCURSEL, 0, 0));
+    std::wstring text = kFormatNames[format == CB_ERR ? DataFile : format];
+    text += L": " + GetDlgText(dlg, IDC_DATA) + L"\r\n";
+    if (IsChecked(dlg, IDC_HMAC))
+        text += L"HMAC: yes\r\n";
+    text += results;
+
+    if (!CopyToClipboard(dlg, text))
+        return;
+
+    SetDlgItemTextW(dlg, IDC_COPY_ALL, L"Copied!");
+    SetTimer(dlg, kCopyAllTimer, kCopyFeedbackMs, nullptr);
+}
+
+bool OnBrowse(HWND dlg)
+{
+    wchar_t path[MAX_PATH * 4] = {};
+    OPENFILENAMEW ofn = { sizeof(ofn) };
+    ofn.hwndOwner = dlg;
+    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = ARRAYSIZE(path);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn))
+        return false;
+    SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_SETCURSEL, DataFile, 0);
+    SetDlgItemTextW(dlg, IDC_DATA, path);
+    UpdateControlStates(dlg);
+    return true;
+}
+
+void OnCalculate(HWND dlg);
+
+// A drive path (C:\ or C:/), a network path (\\server) or an existing file or
+// folder. Typing such a path keeps the File format even before it exists.
+bool LooksLikePath(const std::wstring& s)
+{
+    if (s.size() >= 3 && iswalpha(s[0]) && s[1] == L':' && (s[2] == L'\\' || s[2] == L'/'))
+        return true;
+    if (s.size() >= 3 && s[0] == L'\\' && s[1] == L'\\')
+        return true;
+    return GetFileAttributesW(LongPath(s).c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+// Data box changed (typed, pasted, dropped or set by code): pick the Data
+// Format automatically. Paths -> File; other text while File is selected ->
+// Text string. Hex is never guessed (plenty of words are valid hex), so a
+// manually chosen Hex string is kept unless a path is entered.
+void OnDataChanged(HWND dlg)
+{
+    static bool updating = false;
+    if (updating || IsBusy())
+        return;
+
+    std::wstring text = GetDlgText(dlg, IDC_DATA);
+    if (text.empty())
+        return;
+
+    // Explorer's "Copy as path" adds quotes; remove them.
+    if (text.size() >= 3 && text.front() == L'"' && text.back() == L'"' &&
+        LooksLikePath(text.substr(1, text.size() - 2)))
+    {
+        text = text.substr(1, text.size() - 2);
+        updating = true;
+        SetDlgItemTextW(dlg, IDC_DATA, text.c_str());
+        SendDlgItemMessageW(dlg, IDC_DATA, EM_SETSEL, text.size(), text.size());
+        updating = false;
+    }
+
+    int format = static_cast<int>(SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_GETCURSEL, 0, 0));
+    int detected = LooksLikePath(text) ? DataFile : (format == DataFile ? DataText : format);
+    if (detected != format)
+    {
+        SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_SETCURSEL, detected, 0);
+        UpdateControlStates(dlg);
+    }
+}
+
+void OnDropFiles(HWND dlg, HDROP drop)
+{
+    UINT len = DragQueryFileW(drop, 0, nullptr, 0);
+    std::wstring path(len + 1, L'\0');
+    DragQueryFileW(drop, 0, path.data(), len + 1);
+    path.resize(len);
+    DragFinish(drop);
+
+    if (IsDirectory(path))
+    {
+        ShowFolderHashWindow(dlg, path, true);
+        return;
+    }
+    if (!IsBusy())
+    {
+        SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_SETCURSEL, DataFile, 0);
+        SetDlgItemTextW(dlg, IDC_DATA, path.c_str());
+        UpdateControlStates(dlg);
+    }
+}
+
+void OnCalculate(HWND dlg)
+{
+    if (IsBusy())
+        return;
+
+    auto job = std::make_unique<CalcJob>();
+    job->dataFormat = static_cast<int>(SendDlgItemMessageW(dlg, IDC_DATAFORMAT, CB_GETCURSEL, 0, 0));
+    job->data = GetDlgText(dlg, IDC_DATA);
+    job->hmac = IsChecked(dlg, IDC_HMAC);
+    job->keyFormat = static_cast<int>(SendDlgItemMessageW(dlg, IDC_KEYFORMAT, CB_GETCURSEL, 0, 0));
+    job->key = GetDlgText(dlg, IDC_KEY);
+
+    bool any = false;
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        job->selected[i] = IsChecked(dlg, IDC_CHK_BASE + i) && IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i));
+        any = any || job->selected[i];
+    }
+
+    if (job->dataFormat == DataFile && job->data.empty())
+    {
+        MessageBoxW(dlg, L"Please select a file.", L"HashCalc", MB_ICONINFORMATION);
+        return;
+    }
+    if (job->dataFormat == DataFile && IsDirectory(job->data))
+    {
+        ShowFolderHashWindow(dlg, job->data, true);
+        return;
+    }
+    if (!any)
+    {
+        MessageBoxW(dlg, L"Please select at least one hash algorithm.", L"HashCalc", MB_ICONINFORMATION);
+        return;
+    }
+
+    ClearResults(dlg);
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        g_rowDone[i] = false;
+        g_rowPercent[i] = -1;
+    }
+    g_job = std::move(job);
+    g_cancel = false;
+    g_worker = std::thread(WorkerMain, dlg);
+    SetTimer(dlg, kProgressTimer, kProgressIntervalMs, nullptr);
+    UpdateControlStates(dlg);
+    RefreshProgress(dlg);   // show 0% right away
+}
+
+void OnCalcDone(HWND dlg)
+{
+    KillTimer(dlg, kProgressTimer);
+    if (g_worker.joinable())
+        g_worker.join();
+
+    std::unique_ptr<CalcJob> job = std::move(g_job);
+    for (bool& done : g_rowDone)
+        done = true;
+    UpdateControlStates(dlg);
+    if (!job)
+        return;
+
+    if (!job->error.empty())
+    {
+        ClearResults(dlg);
+        MessageBoxW(dlg, job->error.c_str(), L"HashCalc", MB_ICONERROR);
+        return;
+    }
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        if (!job->selected[i]) continue;
+        SetDlgItemTextW(dlg, IDC_OUT_BASE + i, job->tasks[i].result.c_str());
+        SetProgress(dlg, i, job->tasks[i].hasher ? kProgressRange : 0);
+    }
+}
+
+void OnTaskDone(HWND dlg, int alg)
+{
+    if (!g_job)
+        return;
+    g_rowDone[alg] = true;
+    SetDlgItemTextW(dlg, IDC_OUT_BASE + alg, g_job->tasks[alg].result.c_str());
+    SetProgress(dlg, alg, kProgressRange);
+}
+
+void OnHelp(HWND dlg)
+{
+    MessageBoxW(dlg,
+        L"HashCalc " VERSION_STR L"\n\n"
+        L"1. Enter the data, browse with \"...\" or drop a file on the window.\n"
+        L"2. The data format follows the input: a path selects File, other text selects "
+        L"Text string (UTF-8). Choose Hex string yourself for hex input.\n"
+        L"3. Optionally enable HMAC and enter a key.\n"
+        L"4. Tick the algorithms you need (\"All\" toggles every one) and press Calculate.\n\n"
+        L"Each algorithm runs on its own thread; the bar under each result shows its progress. "
+        L"Use the button next to a result to copy it to the clipboard, or \"Copy All\" for every result.\n\n"
+        L"File > Hash Folder (or dropping a folder on the window) hashes every file in a folder "
+        L"with the algorithms ticked here, and can export the results as CSV or a checksum file.\n\n"
+        L"Settings > Add to Explorer Context Menu adds \"Calculate hash with HashCalc\" for files "
+        L"and \"Hash folder with HashCalc\" for folders. On Windows 11 they are under \"Show more options\".\n\n"
+        L"Command line: run \"HashCalc -h\" in a console for all options.",
+        L"HashCalc Help", MB_ICONINFORMATION);
+}
+
+void OnAbout(HWND dlg)
+{
+    MessageBoxW(dlg,
+        L"HashCalc " VERSION_STR L"\n\n"
+        L"File, folder and text hash calculator.\n\n"
+        L"Algorithms: MD2, MD4, MD5, SHA1, SHA256, SHA384, SHA512, RIPEMD160, "
+        L"PANAMA, TIGER, ADLER32, CRC32 and eDonkey/eMule, with optional HMAC.",
+        L"About HashCalc", MB_ICONINFORMATION);
+}
+
+void OnToggleShellIntegration(HWND dlg)
+{
+    if (IsShellIntegrationInstalled())
+    {
+        if (!RemoveShellIntegration())
+            MessageBoxW(dlg, L"Could not remove the Explorer context menu entries.", L"HashCalc", MB_ICONERROR);
+        return;
+    }
+    if (!InstallShellIntegration())
+    {
+        MessageBoxW(dlg, L"Could not add the Explorer context menu entries.", L"HashCalc", MB_ICONERROR);
+        return;
+    }
+    MessageBoxW(dlg,
+        L"Added to the Explorer context menu:\n\n"
+        L"  \x2022 Files: \"Calculate hash with HashCalc\"\n"
+        L"  \x2022 Folders: \"Hash folder with HashCalc\"\n\n"
+        L"On Windows 11 these entries are under \"Show more options\" (Shift+F10).\n"
+        L"The entries point to this copy of HashCalc; if you move it, add them again.",
+        L"HashCalc", MB_ICONINFORMATION);
+}
+
+bool IsAlwaysOnTop(HWND dlg)
+{
+    return (GetWindowLongPtrW(dlg, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+}
+
+void ApplyAlwaysOnTop(HWND dlg, bool on)
+{
+    SetWindowPos(dlg, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    CheckMenuItem(GetSystemMenu(dlg, FALSE), kSysCmdTopmost, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+}
+
+void OnToggleAlwaysOnTop(HWND dlg)
+{
+    bool on = !IsAlwaysOnTop(dlg);
+    ApplyAlwaysOnTop(dlg, on);
+    Settings settings = LoadSettings();
+    settings.alwaysOnTop = on;
+    SaveSettings(settings);
+}
+
+void OnInitMenuPopup(HWND dlg, HMENU menu)
+{
+    CheckMenuItem(menu, IDM_SETTINGS_TOPMOST, MF_BYCOMMAND | (IsAlwaysOnTop(dlg) ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(menu, IDM_SETTINGS_SHELL, MF_BYCOMMAND |
+        (IsShellIntegrationInstalled() ? MF_CHECKED : MF_UNCHECKED));
+    EnableMenuItem(menu, IDM_FILE_OPEN, MF_BYCOMMAND | (IsBusy() ? MF_GRAYED : MF_ENABLED));
+}
+
+DWORD CheckedAlgorithms(HWND dlg)
+{
+    DWORD mask = 0;
+    for (int i = 0; i < kHashAlgCount; ++i)
+        if (IsChecked(dlg, IDC_CHK_BASE + i))
+            mask |= 1u << i;
+    return mask;
+}
+
+void SaveMainSettings(HWND dlg)
+{
+    Settings settings = LoadSettings();
+    settings.algorithms = CheckedAlgorithms(dlg);
+    SaveSettings(settings);
+}
+
+void InitCopyButtons(HWND dlg)
+{
+    HFONT dlgFont = reinterpret_cast<HFONT>(SendMessageW(dlg, WM_GETFONT, 0, 0));
+    LOGFONTW lf = {};
+    GetObjectW(dlgFont, sizeof(lf), &lf);
+    lf.lfWeight = FW_NORMAL;
+    lf.lfItalic = FALSE;
+    lf.lfUnderline = FALSE;
+    wcscpy_s(lf.lfFaceName, L"Segoe MDL2 Assets");
+    g_iconFont = CreateFontIndirectW(&lf);
+
+    HWND tooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, dlg, nullptr, nullptr, nullptr);
+
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        HWND button = GetDlgItem(dlg, IDC_COPY_BASE + i);
+        SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(g_iconFont), FALSE);
+        SetWindowTextW(button, kGlyphCopy);
+
+        TTTOOLINFOW ti = { sizeof(ti) };
+        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        ti.hwnd = dlg;
+        ti.uId = reinterpret_cast<UINT_PTR>(button);
+        ti.lpszText = const_cast<LPWSTR>(L"Copy to clipboard");
+        SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+
+        SendDlgItemMessageW(dlg, IDC_PROG_BASE + i, PBM_SETRANGE32, 0, kProgressRange);
+    }
+}
+
+// Widening the window stretches the inputs, outputs and progress bars and keeps
+// the buttons on the right edge. The height is fixed.
+void InitLayout(HWND dlg)
+{
+    using A = AnchorLayout;
+    g_layout.Add(IDC_DATA, A::GrowX);
+    g_layout.Add(IDC_BROWSE, A::MoveX);
+    g_layout.Add(IDC_KEY, A::GrowX);
+    g_layout.Add(IDC_SEP_TOP, A::GrowX);
+    g_layout.Add(IDC_COPY_ALL, A::MoveX);
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        g_layout.Add(IDC_OUT_BASE + i, A::GrowX);
+        g_layout.Add(IDC_COPY_BASE + i, A::MoveX);
+        g_layout.Add(IDC_PROG_BASE + i, A::GrowX);
+    }
+    g_layout.Add(IDC_SEP_MID, A::GrowX);
+    g_layout.Add(IDC_SEP_BOTTOM, A::GrowX);
+    g_layout.Add(IDC_CALCULATE, A::MoveX);
+    g_layout.Add(IDCANCEL, A::MoveX);
+    g_layout.Add(IDC_HELPBTN, A::MoveX);
+    g_layout.Capture(dlg);
+}
+
+void OnInitDialog(HWND dlg)
+{
+    g_dlg = dlg;
+    SetWindowTextW(dlg, L"HashCalc " VERSION_STR);
+
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    HICON bigIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
+    HICON smallIcon = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+    SendMessageW(dlg, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(bigIcon));
+    SendMessageW(dlg, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
+
+    HWND fmt = GetDlgItem(dlg, IDC_DATAFORMAT);
+    SendMessageW(fmt, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"File"));
+    SendMessageW(fmt, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Text string"));
+    SendMessageW(fmt, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Hex string"));
+    SendMessageW(fmt, CB_SETCURSEL, DataFile, 0);
+
+    HWND keyFmt = GetDlgItem(dlg, IDC_KEYFORMAT);
+    SendMessageW(keyFmt, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Text string"));
+    SendMessageW(keyFmt, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Hex string"));
+    SendMessageW(keyFmt, CB_SETCURSEL, KeyHex, 0);
+
+    // Remembered algorithm selection (also used by Explorer launches)
+    DWORD algorithms = LoadSettings().algorithms;
+    for (int i = 0; i < kHashAlgCount; ++i)
+        CheckDlgButton(dlg, IDC_CHK_BASE + i, (algorithms >> i) & 1 ? BST_CHECKED : BST_UNCHECKED);
+
+    // Bold italic underlined "logo" text, as in the original layout
+    HFONT dlgFont = reinterpret_cast<HFONT>(SendMessageW(dlg, WM_GETFONT, 0, 0));
+    LOGFONTW lf = {};
+    GetObjectW(dlgFont, sizeof(lf), &lf);
+    lf.lfWeight = FW_BOLD;
+    lf.lfItalic = TRUE;
+    lf.lfUnderline = TRUE;
+    g_logoFont = CreateFontIndirectW(&lf);
+    SendDlgItemMessageW(dlg, IDC_LOGO, WM_SETFONT, reinterpret_cast<WPARAM>(g_logoFont), FALSE);
+
+    // "Always on Top" and "About HashCalc..." in the system (control) menu
+    HMENU systemMenu = GetSystemMenu(dlg, FALSE);
+    AppendMenuW(systemMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(systemMenu, MF_STRING, kSysCmdTopmost, L"Always on &Top");
+    AppendMenuW(systemMenu, MF_STRING, kSysCmdAbout, L"&About HashCalc...");
+    if (LoadSettings().alwaysOnTop)
+        ApplyAlwaysOnTop(dlg, true);
+
+    InitCopyButtons(dlg);
+    InitLayout(dlg);
+    UpdateControlStates(dlg);
+
+    if (!g_startup.file.empty())
+    {
+        SetDlgItemTextW(dlg, IDC_DATA, g_startup.file.c_str());
+        PostMessageW(dlg, WM_COMMAND, IDC_CALCULATE, 0);
+    }
+    if (!g_startup.folder.empty())
+        PostMessageW(dlg, WM_APP_OPEN_FOLDER, 0, 0);
+}
+
+void OnClose(HWND dlg)
+{
+    KillTimer(dlg, kProgressTimer);
+    StopWorker();
+    SaveMainSettings(dlg);
+    DestroyWindow(dlg);
+}
+
+INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+        OnInitDialog(dlg);
+        return TRUE;
+
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+        if (id >= IDC_COPY_BASE && id < IDC_COPY_BASE + kHashAlgCount)
+        {
+            OnCopy(dlg, id - IDC_COPY_BASE);
+            return TRUE;
+        }
+        if (id >= IDC_CHK_BASE && id < IDC_CHK_BASE + kHashAlgCount)
+        {
+            UpdateAllCheckbox(dlg);
+            return TRUE;
+        }
+        switch (id)
+        {
+        case IDC_CHK_ALL:
+            OnCheckAll(dlg);
+            return TRUE;
+        case IDC_COPY_ALL:
+        case IDM_FILE_COPYALL:
+            OnCopyAll(dlg);
+            return TRUE;
+        case IDC_CALCULATE:
+            OnCalculate(dlg);
+            return TRUE;
+        case IDC_BROWSE:
+            OnBrowse(dlg);
+            return TRUE;
+        case IDM_FILE_OPEN:
+            if (!IsBusy() && OnBrowse(dlg))
+                OnCalculate(dlg);
+            return TRUE;
+        case IDM_FILE_FOLDER:
+            ShowFolderHashWindow(dlg, L"", false);
+            return TRUE;
+        case IDM_SETTINGS_SHELL:
+            OnToggleShellIntegration(dlg);
+            return TRUE;
+        case IDM_SETTINGS_TOPMOST:
+            OnToggleAlwaysOnTop(dlg);
+            return TRUE;
+        case IDC_HELPBTN:
+        case IDM_HELP_HELP:
+            OnHelp(dlg);
+            return TRUE;
+        case IDM_HELP_ABOUT:
+            OnAbout(dlg);
+            return TRUE;
+        case IDC_HMAC:
+            UpdateControlStates(dlg);
+            return TRUE;
+        case IDC_DATAFORMAT:
+            if (HIWORD(wParam) == CBN_SELCHANGE)
+                UpdateControlStates(dlg);
+            return TRUE;
+        case IDC_DATA:
+            if (HIWORD(wParam) == EN_CHANGE)
+                OnDataChanged(dlg);
+            return TRUE;
+        case IDM_FILE_EXIT:
+        case IDCANCEL:
+            OnClose(dlg);
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_SYSCOMMAND:
+        if ((wParam & 0xFFF0) == kSysCmdAbout)
+        {
+            OnAbout(dlg);
+            return TRUE;
+        }
+        if ((wParam & 0xFFF0) == kSysCmdTopmost)
+        {
+            OnToggleAlwaysOnTop(dlg);
+            return TRUE;
+        }
+        return FALSE;
+
+    case WM_NCHITTEST:
+        // Background and labels drag the window like the title bar.
+        return DragAnywhereHitTest(dlg, wParam, lParam);
+
+    case WM_CTLCOLORSTATIC:
+    {
+        // Read-only output boxes: grey text while they show a percentage.
+        int id = GetDlgCtrlID(reinterpret_cast<HWND>(lParam));
+        if (id >= IDC_OUT_BASE && id < IDC_OUT_BASE + kHashAlgCount && IsShowingPercent(id - IDC_OUT_BASE))
+        {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetTextColor(hdc, GetSysColor(COLOR_GRAYTEXT));
+            SetBkColor(hdc, GetSysColor(COLOR_BTNFACE));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+        return FALSE;
+    }
+
+    case WM_INITMENUPOPUP:
+        OnInitMenuPopup(dlg, reinterpret_cast<HMENU>(wParam));
+        return TRUE;
+
+    case WM_SIZE:
+        if (wParam != SIZE_MINIMIZED)
+            g_layout.Apply(LOWORD(lParam), HIWORD(lParam));
+        return TRUE;
+
+    case WM_GETMINMAXINFO:
+    {
+        // Horizontal resizing only: at least the designed size, height locked.
+        SIZE initial = g_layout.InitialWindowSize();
+        if (initial.cx)
+        {
+            auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+            info->ptMinTrackSize = { initial.cx, initial.cy };
+            info->ptMaxTrackSize.y = initial.cy;
+        }
+        return TRUE;
+    }
+
+    case WM_TIMER:
+        if (wParam == kProgressTimer)
+            RefreshProgress(dlg);
+        else if (wParam == kCopyAllTimer)
+        {
+            KillTimer(dlg, wParam);
+            SetDlgItemTextW(dlg, IDC_COPY_ALL, L"Copy All");
+        }
+        else if (wParam >= kCopyTimerBase && wParam < kCopyTimerBase + kHashAlgCount)
+        {
+            KillTimer(dlg, wParam);
+            SetDlgItemTextW(dlg, IDC_COPY_BASE + static_cast<int>(wParam - kCopyTimerBase), kGlyphCopy);
+        }
+        return TRUE;
+
+    case WM_DROPFILES:
+        OnDropFiles(dlg, reinterpret_cast<HDROP>(wParam));
+        return TRUE;
+
+    case WM_APP_TASK_DONE:
+        OnTaskDone(dlg, static_cast<int>(wParam));
+        return TRUE;
+
+    case WM_APP_CALC_DONE:
+        OnCalcDone(dlg);
+        return TRUE;
+
+    case WM_APP_OPEN_FOLDER:
+        ShowFolderHashWindow(dlg, g_startup.folder, true);
+        return TRUE;
+
+    case WM_DESTROY:
+        for (HFONT* font : { &g_logoFont, &g_iconFont })
+        {
+            if (*font)
+            {
+                DeleteObject(*font);
+                *font = nullptr;
+            }
+        }
+        PostQuitMessage(0);
+        break;
+    }
+    return FALSE;
+}
+
+bool IsGuiSwitch(const wchar_t* arg)
+{
+    return _wcsicmp(arg, L"-gui") == 0 || _wcsicmp(arg, L"/gui") == 0;
+}
+
+// GUI arguments (from Explorer, the context menu or "HashCalc -gui ..."):
+// HashCalc.exe <file>            hash the file in the main window
+// HashCalc.exe <folder>          open the folder window and hash the folder
+// HashCalc.exe /folder <folder>  same (used by the Explorer context menu)
+void ParseStartupArgs(int argc, wchar_t** argv)
+{
+    int first = argc >= 2 && IsGuiSwitch(argv[1]) ? 2 : 1;
+    if (argc >= first + 2 && _wcsicmp(argv[first], L"/folder") == 0)
+        g_startup.folder = argv[first + 1];
+    else if (argc >= first + 1)
+    {
+        if (IsDirectory(argv[first]))
+            g_startup.folder = argv[first];
+        else
+            g_startup.file = argv[first];
+    }
+}
+
+// Starts another instance without a console, so the GUI does not keep the
+// console prompt waiting.
+bool RelaunchDetached(int argc, wchar_t** argv, int firstArg)
+{
+    std::wstring command = L"\"" + ExePath() + L"\" -gui";
+    for (int i = firstArg; i < argc; ++i)
+    {
+        std::wstring arg = argv[i];
+        if (!arg.empty() && arg.back() == L'\\')
+            arg += L'\\';   // keep a trailing backslash from escaping the closing quote
+        command += L" \"" + arg + L"\"";
+    }
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS,
+            nullptr, nullptr, &si, &pi))
+        return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+int RunGui(int argc, wchar_t** argv)
+{
+    ParseStartupArgs(argc, argv);
+
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_LISTVIEW_CLASSES };
+    InitCommonControlsEx(&icc);
+
+    HWND dlg = CreateDialogParamW(instance, MAKEINTRESOURCEW(IDD_HASHCALC), nullptr, DialogProc, 0);
+    if (!dlg)
+        return 1;
+    STARTUPINFOW si = { sizeof(si) };
+    GetStartupInfoW(&si);
+    ShowWindow(dlg, (si.dwFlags & STARTF_USESHOWWINDOW) ? si.wShowWindow : SW_SHOWDEFAULT);
+
+    // Modeless main window + folder window: route keyboard input to the right one.
+    HACCEL accel = LoadAcceleratorsW(instance, MAKEINTRESOURCEW(IDR_ACCEL));
+    MSG msg = {};
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+    {
+        HWND folder = FolderHashWindow();
+        if (folder && (msg.hwnd == folder || IsChild(folder, msg.hwnd)) && IsDialogMessageW(folder, &msg))
+            continue;
+        if ((msg.hwnd == g_dlg || IsChild(g_dlg, msg.hwnd)) && TranslateAcceleratorW(g_dlg, accel, &msg))
+            continue;
+        if (g_dlg && IsDialogMessageW(g_dlg, &msg))
+            continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    CoUninitialize();
+    return static_cast<int>(msg.wParam);
+}
+
+} // namespace
+
+// Implemented for FolderHash.cpp: the current selection of the main window.
+bool GetMainHashOptions(HashOptions& options, std::wstring& error)
+{
+    HWND dlg = g_dlg;
+    options = HashOptions();
+    options.hmac = IsChecked(dlg, IDC_HMAC);
+    if (options.hmac)
+    {
+        std::wstring key = GetDlgText(dlg, IDC_KEY);
+        bool hexKey = SendDlgItemMessageW(dlg, IDC_KEYFORMAT, CB_GETCURSEL, 0, 0) == KeyHex;
+        if (!hexKey)
+            options.key = ToUtf8(key);
+        else if (!ParseHex(key, options.key))
+        {
+            error = L"The HMAC key in the main window is not a valid hex string.";
+            return false;
+        }
+    }
+
+    bool any = false;
+    for (int i = 0; i < kHashAlgCount; ++i)
+    {
+        // Not IsWindowEnabled: the checkboxes are disabled while the main window calculates.
+        bool usable = !options.hmac || SupportsHmac(static_cast<HashAlg>(i));
+        options.selected[i] = usable && IsChecked(dlg, IDC_CHK_BASE + i);
+        any = any || options.selected[i];
+    }
+    if (!any)
+    {
+        error = L"Please tick at least one hash algorithm in the main window.";
+        return false;
+    }
+    return true;
+}
+
+// One executable for both the GUI and the command line. It is a console
+// program whose manifest asks Windows 11 24H2+ not to create a console when
+// started outside one (consoleAllocationPolicy = detached, see HashCalc.manifest):
+//  - started from cmd/PowerShell/Terminal: command line mode; the shell waits
+//    for it, so pipes, redirection and exit codes work
+//  - started from Explorer, a shortcut or the context menu: the GUI
+int wmain(int argc, wchar_t** argv)
+{
+    // Processes attached to our console: 0 = none (detached), 1 = a console
+    // created just for us (older Windows that ignore the manifest policy, or
+    // "start HashCalc"), 2+ = started from a shell. Not GetConsoleWindow():
+    // consoles can exist without a window (e.g. scripts run hidden).
+    DWORD processes[4];
+    DWORD attached = GetConsoleProcessList(processes, ARRAYSIZE(processes));
+    bool ownConsole = attached == 1;
+    bool fromConsole = attached > 1;
+    bool guiSwitch = argc >= 2 && IsGuiSwitch(argv[1]);
+
+    if (fromConsole)
+    {
+        if (argc >= 2 && !guiSwitch)
+            return RunCli(argc, argv);
+        // "HashCalc" or "HashCalc -gui [file|folder]": open the GUI in its own
+        // process so the prompt comes back right away.
+        if (RelaunchDetached(argc, argv, guiSwitch ? 2 : 1))
+            return 0;
+    }
+    else if (!guiSwitch && IsCliInvocation(argc, argv))
+    {
+        // Options without an interactive console, e.g. output redirected by a script.
+        return RunCli(argc, argv);
+    }
+
+    if (ownConsole)
+    {
+        if (HWND console = GetConsoleWindow())
+            ShowWindow(console, SW_HIDE);
+        FreeConsole();
+    }
+    return RunGui(argc, argv);
+}
