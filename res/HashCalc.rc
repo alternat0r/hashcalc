@@ -48,7 +48,7 @@ BEGIN
 END
 
 // Resizable horizontally only (height is locked in WM_GETMINMAXINFO), no maximize.
-IDD_HASHCALC DIALOGEX 0, 0, 250, 347
+IDD_HASHCALC DIALOGEX 0, 0, 268, 347
 STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME
 EXSTYLE WS_EX_ACCEPTFILES | WS_EX_APPWINDOW
 CAPTION "HashCalc"
@@ -59,24 +59,25 @@ BEGIN
     LTEXT           "Data Format:", IDC_STATIC, 7, 6, 52, 8
     COMBOBOX        IDC_DATAFORMAT, 7, 16, 52, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Data:", IDC_STATIC, 64, 6, 40, 8
-    EDITTEXT        IDC_DATA, 64, 16, 160, 13, ES_AUTOHSCROLL
-    PUSHBUTTON      "...", IDC_BROWSE, 227, 16, 16, 13
+    EDITTEXT        IDC_DATA, 64, 16, 178, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_BROWSE, 245, 16, 16, 13
 
     AUTOCHECKBOX    "HMAC", IDC_HMAC, 7, 43, 52, 10
     LTEXT           "Key Format:", IDC_STATIC, 64, 32, 50, 8
     COMBOBOX        IDC_KEYFORMAT, 64, 41, 50, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Key:", IDC_STATIC, 118, 32, 40, 8
-    EDITTEXT        IDC_KEY, 118, 41, 125, 13, ES_AUTOHSCROLL
+    EDITTEXT        IDC_KEY, 118, 41, 143, 13, ES_AUTOHSCROLL
 
     CONTROL         "All", IDC_CHK_ALL, "Button", BS_3STATE | WS_TABSTOP, 7, 57, 30, 10
-    CONTROL         "", IDC_SEP_TOP, "Static", SS_ETCHEDHORZ, 40, 62, 159, 1
-    PUSHBUTTON      "Copy All", IDC_COPY_ALL, 203, 55, 40, 12
+    CONTROL         "", IDC_SEP_TOP, "Static", SS_ETCHEDHORZ, 40, 62, 177, 1
+    PUSHBUTTON      "Copy All", IDC_COPY_ALL, 221, 55, 40, 12
 
     // --- Hash rows: checkbox, output, copy button, progress bar ----------
     // Row i starts at y = 68 + 18*i
     AUTOCHECKBOX    "MD5", IDC_CHK_MD5, 7, 69, 52, 10
     EDITTEXT        IDC_OUT_MD5, 64, 68, 161, 12, ES_AUTOHSCROLL | ES_READONLY
     PUSHBUTTON      "", IDC_COPY_MD5, 227, 68, 16, 12
+    PUSHBUTTON      "", IDC_VT_MD5, 245, 68, 16, 12
     CONTROL         "", IDC_PROG_MD5, "msctls_progress32", PBS_SMOOTH, 64, 81, 161, 3
     AUTOCHECKBOX    "MD4", IDC_CHK_MD4, 7, 87, 52, 10
     EDITTEXT        IDC_OUT_MD4, 64, 86, 161, 12, ES_AUTOHSCROLL | ES_READONLY
@@ -85,10 +86,12 @@ BEGIN
     AUTOCHECKBOX    "SHA1", IDC_CHK_SHA1, 7, 105, 52, 10
     EDITTEXT        IDC_OUT_SHA1, 64, 104, 161, 12, ES_AUTOHSCROLL | ES_READONLY
     PUSHBUTTON      "", IDC_COPY_SHA1, 227, 104, 16, 12
+    PUSHBUTTON      "", IDC_VT_SHA1, 245, 104, 16, 12
     CONTROL         "", IDC_PROG_SHA1, "msctls_progress32", PBS_SMOOTH, 64, 117, 161, 3
     AUTOCHECKBOX    "SHA256", IDC_CHK_SHA256, 7, 123, 52, 10
     EDITTEXT        IDC_OUT_SHA256, 64, 122, 161, 12, ES_AUTOHSCROLL | ES_READONLY
     PUSHBUTTON      "", IDC_COPY_SHA256, 227, 122, 16, 12
+    PUSHBUTTON      "", IDC_VT_SHA256, 245, 122, 16, 12
     CONTROL         "", IDC_PROG_SHA256, "msctls_progress32", PBS_SMOOTH, 64, 135, 161, 3
     AUTOCHECKBOX    "SHA384", IDC_CHK_SHA384, 7, 141, 52, 10
     EDITTEXT        IDC_OUT_SHA384, 64, 140, 161, 12, ES_AUTOHSCROLL | ES_READONLY
@@ -123,20 +126,20 @@ BEGIN
     PUSHBUTTON      "", IDC_COPY_CRC32, 227, 266, 16, 12
     CONTROL         "", IDC_PROG_CRC32, "msctls_progress32", PBS_SMOOTH, 64, 279, 161, 3
 
-    CONTROL         "", IDC_SEP_MID, "Static", SS_ETCHEDHORZ, 7, 288, 236, 1
+    CONTROL         "", IDC_SEP_MID, "Static", SS_ETCHEDHORZ, 7, 288, 254, 1
 
     CONTROL         "eDonkey/ eMule", IDC_CHK_EDONKEY, "Button", BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP, 7, 293, 52, 18
     EDITTEXT        IDC_OUT_EDONKEY, 64, 295, 161, 12, ES_AUTOHSCROLL | ES_READONLY
     PUSHBUTTON      "", IDC_COPY_EDONKEY, 227, 295, 16, 12
     CONTROL         "", IDC_PROG_EDONKEY, "msctls_progress32", PBS_SMOOTH, 64, 308, 161, 3
 
-    CONTROL         "", IDC_SEP_BOTTOM, "Static", SS_ETCHEDHORZ, 7, 317, 236, 1
+    CONTROL         "", IDC_SEP_BOTTOM, "Static", SS_ETCHEDHORZ, 7, 317, 254, 1
 
     // --- Bottom bar --------------------------------------------------------
     LTEXT           "HashCalc", IDC_LOGO, 7, 328, 70, 10
-    DEFPUSHBUTTON   "Calculate", IDC_CALCULATE, 85, 325, 50, 15
-    PUSHBUTTON      "Close", IDCANCEL, 139, 325, 50, 15
-    PUSHBUTTON      "Help", IDC_HELPBTN, 193, 325, 50, 15
+    DEFPUSHBUTTON   "Calculate", IDC_CALCULATE, 103, 325, 50, 15
+    PUSHBUTTON      "Close", IDCANCEL, 157, 325, 50, 15
+    PUSHBUTTON      "Help", IDC_HELPBTN, 211, 325, 50, 15
 END
 
 // Folder (bulk) hashing window: resizable, controls anchored in code.

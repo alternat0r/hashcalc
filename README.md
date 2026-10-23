@@ -10,6 +10,14 @@ A small, fast hash calculator for Windows. It works as a normal window **and** a
   <img src="docs/main-window.png" alt="HashCalc main window">
 </p>
 
+## Why I made this
+
+This app was inspired by **SlavaSoft HashCalc**. I have used it a lot for many years, but it has not been updated since 2007, and over the years I kept missing features. It is closed source, so I could not add them myself.
+
+So I made my own version. It grew from my old hash code, which was command line only. Now it has a window that looks and works like the HashCalc I know, plus the features I always wanted, and the command line is still there.
+
+> This is an independent project. It is not made by, or connected with, SlavaSoft.
+
 ## What it can do
 
 - **13 hash types:** MD5, MD4, MD2, SHA1, SHA256, SHA384, SHA512, RIPEMD160, PANAMA, TIGER, ADLER32, CRC32 and eDonkey/eMule.
@@ -17,6 +25,7 @@ A small, fast hash calculator for Windows. It works as a normal window **and** a
 - **Files, text or hex** as input. You can also drag and drop a file onto the window.
 - **Fast:** each hash runs on its own thread. A small bar and a percentage show the progress.
 - **Copy** one result with the copy button, or everything with **Copy All**.
+- **Check on VirusTotal:** the shield button next to the MD5, SHA1 and SHA256 results opens the VirusTotal report for that hash in your browser. Only the hash is sent, not the file. It is off for HMAC results, because those depend on your key.
 - **Hash a whole folder**, then export the results as CSV or as a checksum file.
 - **Right-click menu in Explorer** (optional): "Calculate hash with HashCalc".
 - **Command line** for scripts, including checking files against a checksum list.
@@ -164,4 +173,4 @@ hashcalc/
 | `main-window.png` | screenshot of the main window (used above) |
 | `folder-hash.png` | screenshot of the Folder Hash window (used above) |
 | `icon.png` | the app icon, the Arabic letter H (هـ) |
-| `hashcalc.png` | the original HashCalc window this project's design is based on |
+| `hashcalc.png` | the original SlavaSoft HashCalc window that inspired this project |

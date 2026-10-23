@@ -35,6 +35,12 @@
 #define IDC_SEP_MID             1013
 #define IDC_SEP_BOTTOM          1014
 
+// VirusTotal lookup buttons: IDC_VT_BASE + HashAlg (only MD5, SHA1, SHA256)
+#define IDC_VT_BASE             1700
+#define IDC_VT_MD5              1700
+#define IDC_VT_SHA1             1702
+#define IDC_VT_SHA256           1703
+
 // Add to PATH window
 #define IDC_P_FOLDER            1600
 #define IDC_P_BROWSE            1601

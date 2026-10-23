@@ -7,8 +7,10 @@
 #include <shlobj.h>
 #include <shlwapi.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cwctype>
 #include <deque>
 #include <exception>
 #include <memory>
@@ -50,6 +52,9 @@ constexpr UINT kSysCmdTopmost = 0x0120;
 // Segoe MDL2 Assets glyphs
 constexpr wchar_t kGlyphCopy[] = L"\xE8C8";
 constexpr wchar_t kGlyphDone[] = L"\xE73E";
+constexpr wchar_t kGlyphShield[] = L"\xEA18";
+
+constexpr wchar_t kVirusTotalUrl[] = L"https://www.virustotal.com/gui/file/";
 
 // Combo box item indices
 enum DataFormat { DataFile = 0, DataText = 1, DataHex = 2 };
@@ -107,6 +112,7 @@ int g_rowPercent[kHashAlgCount] = {};    // percentage currently shown, -1 = non
 std::atomic<bool> g_cancel{ false };
 bool g_userCancelled = false;            // Cancel button pressed (UI thread only)
 HANDLE g_instanceMutex = nullptr;        // held while Single Instance is on
+bool g_resultsAreHmac = false;           // shown results are HMACs (not file hashes)
 std::deque<std::wstring> g_pendingFiles; // files sent by other instances while busy
 HFONT g_logoFont = nullptr;
 HFONT g_iconFont = nullptr;
@@ -467,6 +473,40 @@ bool IsShowingPercent(int alg)
     return IsBusy() && g_job && g_job->selected[alg] && !g_rowDone[alg];
 }
 
+// ---------------------------------------------------------------------------
+// VirusTotal lookup. Its file page accepts MD5, SHA1 and SHA256, so only those
+// rows have the button. Only the hash goes to VirusTotal (in the browser).
+// ---------------------------------------------------------------------------
+bool SupportsVirusTotal(int alg)
+{
+    HashAlg a = static_cast<HashAlg>(alg);
+    return a == HashAlg::MD5 || a == HashAlg::SHA1 || a == HashAlg::SHA256;
+}
+
+// The row shows a complete hash VirusTotal can look up: right length, hex only,
+// and not an HMAC (that depends on the key, so VirusTotal cannot know it).
+bool IsVirusTotalHash(int alg, const std::wstring& text)
+{
+    size_t length = alg == static_cast<int>(HashAlg::MD5) ? 32 : alg == static_cast<int>(HashAlg::SHA1) ? 40 : 64;
+    return !g_resultsAreHmac && text.size() == length &&
+        std::all_of(text.begin(), text.end(), [](wchar_t c) { return iswxdigit(c) != 0; });
+}
+
+void UpdateVirusTotalButton(HWND dlg, int alg)
+{
+    if (SupportsVirusTotal(alg))
+        EnableWindow(GetDlgItem(dlg, IDC_VT_BASE + alg), IsVirusTotalHash(alg, GetDlgText(dlg, IDC_OUT_BASE + alg)));
+}
+
+void OnVirusTotal(HWND dlg, int alg)
+{
+    std::wstring hash = GetDlgText(dlg, IDC_OUT_BASE + alg);
+    if (!SupportsVirusTotal(alg) || !IsVirusTotalHash(alg, hash))
+        return;
+    CharLowerBuffW(hash.data(), static_cast<DWORD>(hash.size()));
+    ShellExecuteW(dlg, L"open", (kVirusTotalUrl + hash).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 void OnCopy(HWND dlg, int alg)
 {
     if (!CopyToClipboard(dlg, GetDlgText(dlg, IDC_OUT_BASE + alg)))
@@ -641,6 +681,7 @@ void OnCalculate(HWND dlg)
         return;
     }
 
+    g_resultsAreHmac = job->hmac;
     ClearResults(dlg);
     for (int i = 0; i < kHashAlgCount; ++i)
     {
@@ -850,7 +891,8 @@ void OnHelp(HWND dlg)
         L"While it runs, the same button cancels.\n\n"
         L"File > Reset (Ctrl+R) clears everything and restores the default settings.\n\n"
         L"Each algorithm runs on its own thread; the bar under each result shows its progress. "
-        L"Use the button next to a result to copy it to the clipboard, or \"Copy All\" for every result.\n\n"
+        L"Use the button next to a result to copy it to the clipboard, or \"Copy All\" for every result. "
+        L"The shield button (MD5, SHA1 and SHA256) looks the hash up on VirusTotal in your browser.\n\n"
         L"File > Hash Folder (or dropping a folder on the window) hashes every file in a folder "
         L"with the algorithms ticked here, and can export the results as CSV or a checksum file.\n\n"
         L"Settings > Add to Explorer Context Menu adds \"Calculate hash with HashCalc\" for files "
@@ -1213,7 +1255,20 @@ void InitCopyButtons(HWND dlg)
         SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
 
         SendDlgItemMessageW(dlg, IDC_PROG_BASE + i, PBM_SETRANGE32, 0, kProgressRange);
+
+        if (SupportsVirusTotal(i))
+        {
+            HWND vt = GetDlgItem(dlg, IDC_VT_BASE + i);
+            SendMessageW(vt, WM_SETFONT, reinterpret_cast<WPARAM>(g_iconFont), FALSE);
+            SetWindowTextW(vt, kGlyphShield);
+            ti.uId = reinterpret_cast<UINT_PTR>(vt);
+            ti.lpszText = const_cast<LPWSTR>(
+                L"Check this hash on VirusTotal (opens your browser; only the hash is sent, not the file)");
+            SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+            UpdateVirusTotalButton(dlg, i);
+        }
     }
+    SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 300);   // wrap the longer tooltip
 }
 
 // Widening the window stretches the inputs, outputs and progress bars and keeps
@@ -1230,6 +1285,8 @@ void InitLayout(HWND dlg)
     {
         g_layout.Add(IDC_OUT_BASE + i, A::GrowX);
         g_layout.Add(IDC_COPY_BASE + i, A::MoveX);
+        if (SupportsVirusTotal(i))
+            g_layout.Add(IDC_VT_BASE + i, A::MoveX);
         g_layout.Add(IDC_PROG_BASE + i, A::GrowX);
     }
     g_layout.Add(IDC_SEP_MID, A::GrowX);
@@ -1319,6 +1376,18 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND:
     {
         int id = LOWORD(wParam);
+        if (id >= IDC_VT_BASE && id < IDC_VT_BASE + kHashAlgCount)
+        {
+            OnVirusTotal(dlg, id - IDC_VT_BASE);
+            return TRUE;
+        }
+        if (id >= IDC_OUT_BASE && id < IDC_OUT_BASE + kHashAlgCount)
+        {
+            // An output box changed (result, percentage or cleared).
+            if (HIWORD(wParam) == EN_CHANGE)
+                UpdateVirusTotalButton(dlg, id - IDC_OUT_BASE);
+            return TRUE;
+        }
         if (id >= IDC_COPY_BASE && id < IDC_COPY_BASE + kHashAlgCount)
         {
             OnCopy(dlg, id - IDC_COPY_BASE);
