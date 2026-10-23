@@ -119,7 +119,6 @@ hashcalc/
 ├─ HashCalc.vcxproj       project file
 ├─ Common.props           shared build settings (small, portable Release build)
 ├─ build.bat              release build, writes dist\HashCalc-<arch>.exe
-├─ push.bat               commit and push to GitHub in one step
 ├─ src/
 │  ├─ core/               hash algorithms (Hashes) and file/folder hashing (FileHash)
 │  ├─ gui/                main window, Folder Hash window, settings and Explorer menu
