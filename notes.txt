@@ -1,0 +1,9 @@
+- Update README.md, this app was inspired from SlavaSoft HashCalc. However, the app has never been update since 2007. I personally use it a lot but lack of features. Since it is close-source. I decide to make my own version of GUI enhancing from my old code which is only CLI.
+
+- add more hash algorithm including Imphash, ssdeep, AUthentihash, Vhash, TLSH, Rich PE header hash
+- add link check against VirusTotal.
+- add option for one instance running only but not by default.
+
+===
+
+- Make sure no vulnerability related DLL hijacking.

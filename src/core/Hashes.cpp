@@ -273,6 +273,9 @@ protected:
         m_used = 0;
     }
 
+    // Bytes waiting for the block to fill up (0 .. BlockSize-1).
+    size_t BufferedBytes() const { return m_used; }
+
 private:
     BYTE m_buf[BlockSize] = {};
     size_t m_used = 0;
@@ -503,6 +506,100 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// MD2 (RFC 1319). Slow by design: each 16-byte block runs 18 rounds of 48
+// table lookups, and every lookup needs the result of the one before it, so
+// the CPU cannot overlap them. Kept as tight as possible: the running value
+// stays in a register, the loops are fixed-size so the compiler unrolls them,
+// and the checksum (a separate chain) can run alongside the main one.
+// ---------------------------------------------------------------------------
+const BYTE kMd2Table[256] = {   // permutation built from the digits of pi
+     41,  46,  67, 201, 162, 216, 124,   1,  61,  54,  84, 161, 236, 240,   6,  19,
+     98, 167,   5, 243, 192, 199, 115, 140, 152, 147,  43, 217, 188,  76, 130, 202,
+     30, 155,  87,  60, 253, 212, 224,  22, 103,  66, 111,  24, 138,  23, 229,  18,
+    190,  78, 196, 214, 218, 158, 222,  73, 160, 251, 245, 142, 187,  47, 238, 122,
+    169, 104, 121, 145,  21, 178,   7,  63, 148, 194,  16, 137,  11,  34,  95,  33,
+    128, 127,  93, 154,  90, 144,  50,  39,  53,  62, 204, 231, 191, 247, 151,   3,
+    255,  25,  48, 179,  72, 165, 181, 209, 215,  94, 146,  42, 172,  86, 170, 198,
+     79, 184,  56, 210, 150, 164, 125, 182, 118, 252, 107, 226, 156, 116,   4, 241,
+     69, 157, 112,  89, 100, 113, 135,  32, 134,  91, 207, 101, 230,  45, 168,   2,
+     27,  96,  37, 173, 174, 176, 185, 246,  28,  70,  97, 105,  52,  64, 126,  15,
+     85,  71, 163,  35, 221,  81, 175,  58, 195,  92, 249, 206, 186, 197, 234,  38,
+     44,  83,  13, 110, 133,  40, 132,   9, 211, 223, 205, 244,  65, 129,  77,  82,
+    106, 220,  55, 200, 108, 193, 171, 250,  36, 225, 123,   8,  12, 189, 177,  74,
+    120, 136, 149, 139, 227,  99, 232, 109, 233, 203, 213, 254,  59,   0,  29,  57,
+    242, 239, 183,  14, 102,  88, 208, 228, 166, 119, 114, 248, 235, 117,  75,  10,
+     49,  68,  80, 180, 143, 237,  31,  26, 219, 153, 141,  51, 159,  17, 131,  20,
+};
+
+class Md2Hasher : public BlockHasher<16>
+{
+public:
+    std::vector<BYTE> Finish() override
+    {
+        // Pad with n bytes of value n (1..16), then hash the checksum block.
+        BYTE n = static_cast<BYTE>(16 - BufferedBytes());
+        BYTE padding[16];
+        memset(padding, n, n);
+        Update(padding, n);
+        Compress(m_checksum);
+        return std::vector<BYTE>(m_state, m_state + 16);
+    }
+
+protected:
+    void ProcessBlock(const BYTE* block) override
+    {
+        BYTE last = m_checksum[15];
+        for (int j = 0; j < 16; ++j)
+            last = m_checksum[j] ^= kMd2Table[block[j] ^ last];
+        Compress(block);
+    }
+
+private:
+    // The table widened to 32 bits: each step of the dependency chain is then a
+    // plain load + XOR, with no extra zero-extension of a byte in between.
+    static const uint32_t* Table32()
+    {
+        static const struct Wide
+        {
+            uint32_t v[256];
+            Wide() { for (int i = 0; i < 256; ++i) v[i] = kMd2Table[i]; }
+        } wide;
+        return wide.v;
+    }
+
+    void Compress(const BYTE* block)
+    {
+        const uint32_t* s = m_table;
+        uint32_t x[48];
+        for (int j = 0; j < 16; ++j)
+        {
+            x[j] = m_state[j];
+            x[16 + j] = block[j];
+            x[32 + j] = static_cast<uint32_t>(m_state[j] ^ block[j]);
+        }
+        uint32_t t = 0;
+        for (uint32_t round = 0; round < 18; ++round)
+        {
+            // 48 steps written out: no loop counter between the dependent lookups.
+#define MD2_STEP(k) t = x[k] ^= s[t];
+#define MD2_STEP8(k) MD2_STEP(k) MD2_STEP(k + 1) MD2_STEP(k + 2) MD2_STEP(k + 3) \
+                     MD2_STEP(k + 4) MD2_STEP(k + 5) MD2_STEP(k + 6) MD2_STEP(k + 7)
+            MD2_STEP8(0) MD2_STEP8(8) MD2_STEP8(16) MD2_STEP8(24) MD2_STEP8(32) MD2_STEP8(40)
+#undef MD2_STEP8
+#undef MD2_STEP
+            t = (t + round) & 0xFF;
+        }
+        for (int j = 0; j < 16; ++j)
+            m_state[j] = static_cast<BYTE>(x[j]);
+    }
+
+    const uint32_t* m_table = Table32();
+
+    BYTE m_state[16] = {};
+    BYTE m_checksum[16] = {};
+};
+
+// ---------------------------------------------------------------------------
 // PANAMA hash (Daemen, Clapp): 17-word state and a 32-stage LFSR buffer.
 // ---------------------------------------------------------------------------
 class PanamaHasher : public BlockHasher<32>
@@ -631,7 +728,6 @@ LPCWSTR CngAlgId(HashAlg alg)
     {
     case HashAlg::MD5:    return BCRYPT_MD5_ALGORITHM;
     case HashAlg::MD4:    return BCRYPT_MD4_ALGORITHM;
-    case HashAlg::MD2:    return BCRYPT_MD2_ALGORITHM;
     case HashAlg::SHA1:   return BCRYPT_SHA1_ALGORITHM;
     case HashAlg::SHA256: return BCRYPT_SHA256_ALGORITHM;
     case HashAlg::SHA384: return BCRYPT_SHA384_ALGORITHM;
@@ -685,6 +781,7 @@ std::unique_ptr<Hasher> CreateHasher(HashAlg alg, const std::vector<BYTE>* hmacK
     case HashAlg::RIPEMD160: factory = Make<Ripemd160Hasher>; break;
     case HashAlg::TIGER:     factory = Make<TigerHasher>; break;
     case HashAlg::PANAMA:    factory = Make<PanamaHasher>; blockSize = 32; break;
+    case HashAlg::MD2:       factory = Make<Md2Hasher>; blockSize = 16; break;
     default: break;
     }
     if (factory)
