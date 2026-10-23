@@ -1,9 +1,9 @@
-#include "Settings.h"
+#include "gui/Settings.h"
 
 #include <shlobj.h>
 #include <string>
 
-#include "Util.h"
+#include "common/Util.h"
 
 #pragma comment(lib, "advapi32.lib")
 

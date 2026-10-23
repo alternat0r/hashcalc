@@ -1,4 +1,4 @@
-#include "FolderHash.h"
+#include "gui/FolderHash.h"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -13,10 +13,10 @@
 #include <memory>
 #include <thread>
 
-#include "FileHash.h"
+#include "common/Util.h"
+#include "core/FileHash.h"
+#include "gui/Settings.h"
 #include "resource.h"
-#include "Settings.h"
-#include "Util.h"
 
 namespace {
 

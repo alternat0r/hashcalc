@@ -1,4 +1,4 @@
-#include "Cli.h"
+#include "cli/Cli.h"
 
 #include <windows.h>
 #include <shlwapi.h>
@@ -11,9 +11,9 @@
 #include <thread>
 #include <vector>
 
-#include "FileHash.h"
-#include "Hashes.h"
-#include "Util.h"
+#include "common/Util.h"
+#include "core/FileHash.h"
+#include "core/Hashes.h"
 #include "version.h"
 
 namespace {

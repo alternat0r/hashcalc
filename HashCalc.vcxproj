@@ -44,50 +44,55 @@
     <Import Project="Common.props" />
   </ImportGroup>
   <!-- One executable for GUI and command line: a console program whose manifest
-       (HashCalc.manifest) stops Windows from creating a console when it is
-       started outside one; see wmain() in main.cpp. -->
+       (res\HashCalc.manifest) stops Windows from creating a console when it is
+       started outside one; see wmain() in src\gui\main.cpp. -->
   <ItemDefinitionGroup>
     <ClCompile>
       <PreprocessorDefinitions>_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Includes are written relative to src (e.g. "core/Hashes.h"); res holds resource.h -->
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)res;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
     <Link>
       <SubSystem>Console</SubSystem>
     </Link>
     <Manifest>
-      <AdditionalManifestFiles>HashCalc.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+      <AdditionalManifestFiles>res\HashCalc.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="Cli.cpp" />
-    <ClCompile Include="FileHash.cpp" />
-    <ClCompile Include="FolderHash.cpp" />
-    <ClCompile Include="Hashes.cpp">
+    <ClCompile Include="src\cli\Cli.cpp" />
+    <ClCompile Include="src\common\Util.cpp" />
+    <ClCompile Include="src\core\FileHash.cpp" />
+    <ClCompile Include="src\core\Hashes.cpp">
       <!-- Hot hash loops: /O1 makes PANAMA ~4.7x and RIPEMD160/TIGER ~25% slower -->
       <Optimization Condition="'$(Configuration)'=='Release'">MaxSpeed</Optimization>
       <FavorSizeOrSpeed Condition="'$(Configuration)'=='Release'">Speed</FavorSizeOrSpeed>
     </ClCompile>
-    <ClCompile Include="Settings.cpp" />
-    <ClCompile Include="Util.cpp" />
+    <ClCompile Include="src\gui\FolderHash.cpp" />
+    <ClCompile Include="src\gui\main.cpp" />
+    <ClCompile Include="src\gui\Settings.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Cli.h" />
-    <ClInclude Include="FileHash.h" />
-    <ClInclude Include="FolderHash.h" />
-    <ClInclude Include="Hashes.h" />
-    <ClInclude Include="resource.h" />
-    <ClInclude Include="Settings.h" />
-    <ClInclude Include="Util.h" />
-    <ClInclude Include="version.h" />
+    <ClInclude Include="src\cli\Cli.h" />
+    <ClInclude Include="src\common\Util.h" />
+    <ClInclude Include="src\core\FileHash.h" />
+    <ClInclude Include="src\core\Hashes.h" />
+    <ClInclude Include="src\gui\FolderHash.h" />
+    <ClInclude Include="src\gui\Settings.h" />
+    <ClInclude Include="src\version.h" />
+    <ClInclude Include="res\resource.h" />
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="HashCalc.rc" />
+    <ResourceCompile Include="res\HashCalc.rc" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Common.props" />
-    <None Include="version.rc2" />
-    <Image Include="HashCalc.ico" />
-    <Manifest Include="HashCalc.manifest" />
+    <None Include="res\version.rc2" />
+    <Image Include="res\HashCalc.ico" />
+    <Manifest Include="res\HashCalc.manifest" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

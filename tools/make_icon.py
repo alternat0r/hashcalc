@@ -1,5 +1,5 @@
 # Generates HashCalc.ico: the Arabic letter H (heh, initial form "هـ") on a blue tile.
-# Usage: python tools/make_icon.py HashCalc.ico   (needs Pillow with Raqm; Windows fonts)
+# Usage: python tools/make_icon.py res/HashCalc.ico   (needs Pillow with Raqm; Windows fonts)
 import sys
 from PIL import Image, ImageDraw, ImageFont
 

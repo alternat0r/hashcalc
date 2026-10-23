@@ -1,45 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Source Files">
+    <Filter Include="src">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx</Extensions>
     </Filter>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx</Extensions>
+    <Filter Include="src\cli">
+      <UniqueIdentifier>{1D2E3F40-5162-4738-8495-A6B7C8D9E0F1}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Resource Files">
+    <Filter Include="src\common">
+      <UniqueIdentifier>{2E3F4051-6273-4849-95A6-B7C8D9E0F102}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\core">
+      <UniqueIdentifier>{3F405162-7384-495A-A6B7-C8D9E0F10213}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\gui">
+      <UniqueIdentifier>{40516273-8495-4A6B-B7C8-D9E0F1021324}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="res">
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
-      <Extensions>rc;rc2;ico;bmp;manifest</Extensions>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Cli.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="FileHash.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="FolderHash.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Hashes.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Settings.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="Util.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\cli\Cli.cpp"><Filter>src\cli</Filter></ClCompile>
+    <ClCompile Include="src\common\Util.cpp"><Filter>src\common</Filter></ClCompile>
+    <ClCompile Include="src\core\FileHash.cpp"><Filter>src\core</Filter></ClCompile>
+    <ClCompile Include="src\core\Hashes.cpp"><Filter>src\core</Filter></ClCompile>
+    <ClCompile Include="src\gui\FolderHash.cpp"><Filter>src\gui</Filter></ClCompile>
+    <ClCompile Include="src\gui\main.cpp"><Filter>src\gui</Filter></ClCompile>
+    <ClCompile Include="src\gui\Settings.cpp"><Filter>src\gui</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Cli.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="FileHash.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="FolderHash.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Hashes.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="resource.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Settings.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="Util.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="version.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\cli\Cli.h"><Filter>src\cli</Filter></ClInclude>
+    <ClInclude Include="src\common\Util.h"><Filter>src\common</Filter></ClInclude>
+    <ClInclude Include="src\core\FileHash.h"><Filter>src\core</Filter></ClInclude>
+    <ClInclude Include="src\core\Hashes.h"><Filter>src\core</Filter></ClInclude>
+    <ClInclude Include="src\gui\FolderHash.h"><Filter>src\gui</Filter></ClInclude>
+    <ClInclude Include="src\gui\Settings.h"><Filter>src\gui</Filter></ClInclude>
+    <ClInclude Include="src\version.h"><Filter>src</Filter></ClInclude>
+    <ClInclude Include="res\resource.h"><Filter>res</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="HashCalc.rc"><Filter>Resource Files</Filter></ResourceCompile>
+    <ResourceCompile Include="res\HashCalc.rc"><Filter>res</Filter></ResourceCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Common.props" />
-    <None Include="version.rc2"><Filter>Resource Files</Filter></None>
-    <Image Include="HashCalc.ico"><Filter>Resource Files</Filter></Image>
-    <Manifest Include="HashCalc.manifest"><Filter>Resource Files</Filter></Manifest>
+    <None Include="res\version.rc2"><Filter>res</Filter></None>
+    <Image Include="res\HashCalc.ico"><Filter>res</Filter></Image>
+    <Manifest Include="res\HashCalc.manifest"><Filter>res</Filter></Manifest>
   </ItemGroup>
 </Project>

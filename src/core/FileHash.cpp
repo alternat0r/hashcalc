@@ -1,4 +1,4 @@
-#include "FileHash.h"
+#include "core/FileHash.h"
 
 #include <shlwapi.h>
 
@@ -6,7 +6,7 @@
 #include <exception>
 #include <memory>
 
-#include "Util.h"
+#include "common/Util.h"
 
 #pragma comment(lib, "shlwapi.lib")
 

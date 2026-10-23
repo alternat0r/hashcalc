@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "Hashes.h"
+#include "core/Hashes.h"
 
 struct FileHashResult
 {

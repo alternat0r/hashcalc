@@ -14,12 +14,12 @@
 #include <thread>
 #include <vector>
 
-#include "Cli.h"
-#include "FolderHash.h"
-#include "Hashes.h"
+#include "cli/Cli.h"
+#include "common/Util.h"
+#include "core/Hashes.h"
+#include "gui/FolderHash.h"
+#include "gui/Settings.h"
 #include "resource.h"
-#include "Settings.h"
-#include "Util.h"
 #include "version.h"
 
 #pragma comment(lib, "comctl32.lib")

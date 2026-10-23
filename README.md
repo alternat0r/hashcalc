@@ -109,4 +109,36 @@ You need **Visual Studio 2022** with the *Desktop development with C++* workload
 
 `build.bat` adds 1 to the minor version each time it runs. It puts the finished files in the `dist` folder.
 
-To make the icon again: `python tools/make_icon.py HashCalc.ico` (needs Pillow).
+To make the icon again: `python tools/make_icon.py res/HashCalc.ico` (needs Pillow).
+
+## Project layout
+
+```
+hashcalc/
+├─ HashCalc.sln           Visual Studio solution (open this)
+├─ HashCalc.vcxproj       project file
+├─ Common.props           shared build settings (small, portable Release build)
+├─ build.bat              release build, writes dist\HashCalc-<arch>.exe
+├─ push.bat               commit and push to GitHub in one step
+├─ src/
+│  ├─ core/               hash algorithms (Hashes) and file/folder hashing (FileHash)
+│  ├─ gui/                main window, Folder Hash window, settings and Explorer menu
+│  ├─ cli/                command line mode
+│  ├─ common/             small helpers (paths, clipboard, window layout)
+│  └─ version.h           version number, updated by build.bat
+├─ res/                   dialogs, menus, icon, manifest and version info
+├─ docs/                  images (see below)
+└─ tools/
+   └─ make_icon.py        makes res/HashCalc.ico
+```
+
+`build/` and `dist/` are created when you build. Git ignores them.
+
+### docs folder
+
+| File | What it is |
+|---|---|
+| `main-window.png` | screenshot of the main window (used above) |
+| `folder-hash.png` | screenshot of the Folder Hash window (used above) |
+| `icon.png` | the app icon, the Arabic letter H (هـ) |
+| `hashcalc.png` | the original HashCalc window this project's design is based on |

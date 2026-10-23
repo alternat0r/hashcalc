@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "Hashes.h"
+#include "core/Hashes.h"
 
 // Implemented in main.cpp: reads the current selection from the main window.
 // Returns false (with a message) if nothing usable is selected.
