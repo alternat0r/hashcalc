@@ -28,7 +28,7 @@ void FinishHashers(std::unique_ptr<Hasher> (&hashers)[kHashAlgCount], FileHashRe
 {
     for (int i = 0; i < kHashAlgCount; ++i)
         if (hashers[i])
-            result.hashes[i] = ToHex(hashers[i]->Finish());
+            result.hashes[i] = hashers[i]->FinishText();
 }
 
 bool IsCancelled(const std::atomic<bool>* cancel)

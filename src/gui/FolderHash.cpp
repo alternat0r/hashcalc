@@ -31,7 +31,8 @@ constexpr DWORD kReadChunkSize = 1 << 20;
 constexpr unsigned kMaxThreads = 8;
 
 // Hex digits per algorithm, used for column widths.
-constexpr int kHexLength[kHashAlgCount] = { 32, 32, 40, 64, 96, 128, 40, 64, 48, 32, 8, 8, 32 };
+constexpr int kHexLength[kHashAlgCount] = { 32, 32, 40, 64, 96, 128, 40, 64, 48, 32, 8, 8, 32,
+                                              32, 64, 32, 80, 72 };   // ssdeep varies; ~80 is typical
 
 enum class FileState { Pending, Done, Failed };
 

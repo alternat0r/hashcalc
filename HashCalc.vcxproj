@@ -66,11 +66,17 @@
     <ClCompile Include="src\cli\Cli.cpp" />
     <ClCompile Include="src\common\Util.cpp" />
     <ClCompile Include="src\core\FileHash.cpp" />
+    <ClCompile Include="src\core\FuzzyHashes.cpp">
+      <!-- per-byte loops: favour speed like Hashes.cpp -->
+      <Optimization Condition="'$(Configuration)'=='Release'">MaxSpeed</Optimization>
+      <FavorSizeOrSpeed Condition="'$(Configuration)'=='Release'">Speed</FavorSizeOrSpeed>
+    </ClCompile>
     <ClCompile Include="src\core\Hashes.cpp">
       <!-- Hot hash loops: /O1 makes PANAMA ~4.7x and RIPEMD160/TIGER ~25% slower -->
       <Optimization Condition="'$(Configuration)'=='Release'">MaxSpeed</Optimization>
       <FavorSizeOrSpeed Condition="'$(Configuration)'=='Release'">Speed</FavorSizeOrSpeed>
     </ClCompile>
+    <ClCompile Include="src\core\PeHashes.cpp" />
     <ClCompile Include="src\gui\FolderHash.cpp" />
     <ClCompile Include="src\gui\main.cpp" />
     <ClCompile Include="src\gui\Settings.cpp" />
@@ -91,6 +97,8 @@
   <ItemGroup>
     <None Include="Common.props" />
     <None Include="res\version.rc2" />
+    <None Include="src\core\OrdinalNames.inc" />
+    <None Include="src\core\TlshTables.inc" />
     <Image Include="res\HashCalc.ico" />
     <Manifest Include="res\HashCalc.manifest" />
   </ItemGroup>

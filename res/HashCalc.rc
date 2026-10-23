@@ -22,6 +22,10 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "E&xit",                              IDM_FILE_EXIT
     END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&PE && Similarity Hashes",          IDM_VIEW_EXTENDED
+    END
     POPUP "&Settings"
     BEGIN
         MENUITEM "Always on &Top\tCtrl+T",             IDM_SETTINGS_TOPMOST
@@ -47,8 +51,11 @@ BEGIN
     VK_F1,  IDM_HELP_HELP,      VIRTKEY
 END
 
-// Resizable horizontally only (height is locked in WM_GETMINMAXINFO), no maximize.
-IDD_HASHCALC DIALOGEX 0, 0, 268, 347
+// Compact layout: input, a grid of hash types, and a list with one row per
+// ticked type. Resizable (the list grows); no maximize. The last grid row and
+// the PE & similarity types are shown with View > PE & Similarity Hashes;
+// when hidden, main.cpp moves everything below the grid up by one row.
+IDD_HASHCALC DIALOGEX 0, 0, 268, 290
 STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME
 EXSTYLE WS_EX_ACCEPTFILES | WS_EX_APPWINDOW
 CAPTION "HashCalc"
@@ -68,78 +75,37 @@ BEGIN
     LTEXT           "Key:", IDC_STATIC, 118, 32, 40, 8
     EDITTEXT        IDC_KEY, 118, 41, 143, 13, ES_AUTOHSCROLL
 
+    // --- Hash types (grid, 4 columns) ---------------------------------------
     CONTROL         "All", IDC_CHK_ALL, "Button", BS_3STATE | WS_TABSTOP, 7, 57, 30, 10
     CONTROL         "", IDC_SEP_TOP, "Static", SS_ETCHEDHORZ, 40, 62, 177, 1
     PUSHBUTTON      "Copy All", IDC_COPY_ALL, 221, 55, 40, 12
+    AUTOCHECKBOX    "MD5", IDC_CHK_MD5, 7, 70, 60, 10
+    AUTOCHECKBOX    "SHA1", IDC_CHK_SHA1, 72, 70, 60, 10
+    AUTOCHECKBOX    "SHA256", IDC_CHK_SHA256, 137, 70, 60, 10
+    AUTOCHECKBOX    "SHA384", IDC_CHK_SHA384, 202, 70, 60, 10
+    AUTOCHECKBOX    "SHA512", IDC_CHK_SHA512, 7, 82, 60, 10
+    AUTOCHECKBOX    "MD4", IDC_CHK_MD4, 72, 82, 60, 10
+    AUTOCHECKBOX    "MD2", IDC_CHK_MD2, 137, 82, 60, 10
+    AUTOCHECKBOX    "RIPEMD160", IDC_CHK_RIPEMD160, 202, 82, 60, 10
+    AUTOCHECKBOX    "TIGER", IDC_CHK_TIGER, 7, 94, 60, 10
+    AUTOCHECKBOX    "PANAMA", IDC_CHK_PANAMA, 72, 94, 60, 10
+    AUTOCHECKBOX    "ADLER32", IDC_CHK_ADLER32, 137, 94, 60, 10
+    AUTOCHECKBOX    "CRC32", IDC_CHK_CRC32, 202, 94, 60, 10
+    AUTOCHECKBOX    "eDonkey", IDC_CHK_EDONKEY, 7, 106, 60, 10
+    AUTOCHECKBOX    "Imphash", IDC_CHK_IMPHASH, 72, 106, 60, 10
+    AUTOCHECKBOX    "Authentihash", IDC_CHK_AUTHENTIHASH, 137, 106, 60, 10
+    AUTOCHECKBOX    "RichHash", IDC_CHK_RICHHASH, 202, 106, 60, 10
+    AUTOCHECKBOX    "ssdeep", IDC_CHK_SSDEEP, 7, 118, 60, 10
+    AUTOCHECKBOX    "TLSH", IDC_CHK_TLSH, 72, 118, 60, 10
 
-    // --- Hash rows: checkbox, output, copy button, progress bar ----------
-    // Row i starts at y = 68 + 18*i
-    AUTOCHECKBOX    "MD5", IDC_CHK_MD5, 7, 69, 52, 10
-    EDITTEXT        IDC_OUT_MD5, 64, 68, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_MD5, 227, 68, 16, 12
-    PUSHBUTTON      "", IDC_VT_MD5, 245, 68, 16, 12
-    CONTROL         "", IDC_PROG_MD5, "msctls_progress32", PBS_SMOOTH, 64, 81, 161, 3
-    AUTOCHECKBOX    "MD4", IDC_CHK_MD4, 7, 87, 52, 10
-    EDITTEXT        IDC_OUT_MD4, 64, 86, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_MD4, 227, 86, 16, 12
-    CONTROL         "", IDC_PROG_MD4, "msctls_progress32", PBS_SMOOTH, 64, 99, 161, 3
-    AUTOCHECKBOX    "SHA1", IDC_CHK_SHA1, 7, 105, 52, 10
-    EDITTEXT        IDC_OUT_SHA1, 64, 104, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_SHA1, 227, 104, 16, 12
-    PUSHBUTTON      "", IDC_VT_SHA1, 245, 104, 16, 12
-    CONTROL         "", IDC_PROG_SHA1, "msctls_progress32", PBS_SMOOTH, 64, 117, 161, 3
-    AUTOCHECKBOX    "SHA256", IDC_CHK_SHA256, 7, 123, 52, 10
-    EDITTEXT        IDC_OUT_SHA256, 64, 122, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_SHA256, 227, 122, 16, 12
-    PUSHBUTTON      "", IDC_VT_SHA256, 245, 122, 16, 12
-    CONTROL         "", IDC_PROG_SHA256, "msctls_progress32", PBS_SMOOTH, 64, 135, 161, 3
-    AUTOCHECKBOX    "SHA384", IDC_CHK_SHA384, 7, 141, 52, 10
-    EDITTEXT        IDC_OUT_SHA384, 64, 140, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_SHA384, 227, 140, 16, 12
-    CONTROL         "", IDC_PROG_SHA384, "msctls_progress32", PBS_SMOOTH, 64, 153, 161, 3
-    AUTOCHECKBOX    "SHA512", IDC_CHK_SHA512, 7, 159, 52, 10
-    EDITTEXT        IDC_OUT_SHA512, 64, 158, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_SHA512, 227, 158, 16, 12
-    CONTROL         "", IDC_PROG_SHA512, "msctls_progress32", PBS_SMOOTH, 64, 171, 161, 3
-    AUTOCHECKBOX    "RIPEMD160", IDC_CHK_RIPEMD160, 7, 177, 52, 10
-    EDITTEXT        IDC_OUT_RIPEMD160, 64, 176, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_RIPEMD160, 227, 176, 16, 12
-    CONTROL         "", IDC_PROG_RIPEMD160, "msctls_progress32", PBS_SMOOTH, 64, 189, 161, 3
-    AUTOCHECKBOX    "PANAMA", IDC_CHK_PANAMA, 7, 195, 52, 10
-    EDITTEXT        IDC_OUT_PANAMA, 64, 194, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_PANAMA, 227, 194, 16, 12
-    CONTROL         "", IDC_PROG_PANAMA, "msctls_progress32", PBS_SMOOTH, 64, 207, 161, 3
-    AUTOCHECKBOX    "TIGER", IDC_CHK_TIGER, 7, 213, 52, 10
-    EDITTEXT        IDC_OUT_TIGER, 64, 212, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_TIGER, 227, 212, 16, 12
-    CONTROL         "", IDC_PROG_TIGER, "msctls_progress32", PBS_SMOOTH, 64, 225, 161, 3
-    AUTOCHECKBOX    "MD2", IDC_CHK_MD2, 7, 231, 52, 10
-    EDITTEXT        IDC_OUT_MD2, 64, 230, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_MD2, 227, 230, 16, 12
-    CONTROL         "", IDC_PROG_MD2, "msctls_progress32", PBS_SMOOTH, 64, 243, 161, 3
-    AUTOCHECKBOX    "ADLER32", IDC_CHK_ADLER32, 7, 249, 52, 10
-    EDITTEXT        IDC_OUT_ADLER32, 64, 248, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_ADLER32, 227, 248, 16, 12
-    CONTROL         "", IDC_PROG_ADLER32, "msctls_progress32", PBS_SMOOTH, 64, 261, 161, 3
-    AUTOCHECKBOX    "CRC32", IDC_CHK_CRC32, 7, 267, 52, 10
-    EDITTEXT        IDC_OUT_CRC32, 64, 266, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_CRC32, 227, 266, 16, 12
-    CONTROL         "", IDC_PROG_CRC32, "msctls_progress32", PBS_SMOOTH, 64, 279, 161, 3
-
-    CONTROL         "", IDC_SEP_MID, "Static", SS_ETCHEDHORZ, 7, 288, 254, 1
-
-    CONTROL         "eDonkey/ eMule", IDC_CHK_EDONKEY, "Button", BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP, 7, 293, 52, 18
-    EDITTEXT        IDC_OUT_EDONKEY, 64, 295, 161, 12, ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "", IDC_COPY_EDONKEY, 227, 295, 16, 12
-    CONTROL         "", IDC_PROG_EDONKEY, "msctls_progress32", PBS_SMOOTH, 64, 308, 161, 3
-
-    CONTROL         "", IDC_SEP_BOTTOM, "Static", SS_ETCHEDHORZ, 7, 317, 254, 1
+    // --- Results: one row per ticked type -----------------------------------
+    CONTROL         "", IDC_RESULTS, "SysListView32", LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_NOCOLUMNHEADER | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 7, 132, 254, 126
 
     // --- Bottom bar --------------------------------------------------------
-    LTEXT           "HashCalc", IDC_LOGO, 7, 328, 70, 10
-    DEFPUSHBUTTON   "Calculate", IDC_CALCULATE, 103, 325, 50, 15
-    PUSHBUTTON      "Close", IDCANCEL, 157, 325, 50, 15
-    PUSHBUTTON      "Help", IDC_HELPBTN, 211, 325, 50, 15
+    LTEXT           "HashCalc", IDC_LOGO, 7, 271, 70, 10
+    DEFPUSHBUTTON   "Calculate", IDC_CALCULATE, 103, 268, 50, 15
+    PUSHBUTTON      "Close", IDCANCEL, 157, 268, 50, 15
+    PUSHBUTTON      "Help", IDC_HELPBTN, 211, 268, 50, 15
 END
 
 // Folder (bulk) hashing window: resizable, controls anchored in code.

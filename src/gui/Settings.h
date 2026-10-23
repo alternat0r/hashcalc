@@ -12,6 +12,7 @@ struct Settings
     bool includeSubfolders = true;
     bool alwaysOnTop = false;
     bool singleInstance = false;  // reuse the open window instead of starting another
+    bool showExtended = false;    // View > PE & Similarity Hashes
     std::wstring pathFolder;      // folder HashCalc.exe was copied to for the PATH, "" = none
 };
 

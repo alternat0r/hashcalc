@@ -25,6 +25,8 @@
     <ClCompile Include="src\common\Util.cpp"><Filter>src\common</Filter></ClCompile>
     <ClCompile Include="src\core\FileHash.cpp"><Filter>src\core</Filter></ClCompile>
     <ClCompile Include="src\core\Hashes.cpp"><Filter>src\core</Filter></ClCompile>
+    <ClCompile Include="src\core\FuzzyHashes.cpp"><Filter>src\core</Filter></ClCompile>
+    <ClCompile Include="src\core\PeHashes.cpp"><Filter>src\core</Filter></ClCompile>
     <ClCompile Include="src\gui\FolderHash.cpp"><Filter>src\gui</Filter></ClCompile>
     <ClCompile Include="src\gui\main.cpp"><Filter>src\gui</Filter></ClCompile>
     <ClCompile Include="src\gui\Settings.cpp"><Filter>src\gui</Filter></ClCompile>
@@ -45,6 +47,8 @@
   <ItemGroup>
     <None Include="Common.props" />
     <None Include="res\version.rc2"><Filter>res</Filter></None>
+    <None Include="src\core\OrdinalNames.inc"><Filter>src\core</Filter></None>
+    <None Include="src\core\TlshTables.inc"><Filter>src\core</Filter></None>
     <Image Include="res\HashCalc.ico"><Filter>res</Filter></Image>
     <Manifest Include="res\HashCalc.manifest"><Filter>res</Filter></Manifest>
   </ItemGroup>

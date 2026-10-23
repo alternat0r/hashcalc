@@ -21,10 +21,12 @@ So I made my own version. It grew from my old hash code, which was command line 
 ## What it can do
 
 - **13 hash types:** MD5, MD4, MD2, SHA1, SHA256, SHA384, SHA512, RIPEMD160, PANAMA, TIGER, ADLER32, CRC32 and eDonkey/eMule.
+- **5 more for malware and file analysis** (View menu): Imphash, Authentihash, RichHash, ssdeep and TLSH. See [PE and similarity hashes](#pe-and-similarity-hashes).
+- **Compact window:** small tick boxes on top, and one results list below that only shows the hashes you ticked.
 - **HMAC** with a text or hex key.
 - **Files, text or hex** as input. You can also drag and drop a file onto the window.
 - **Fast:** each hash runs on its own thread. A small bar and a percentage show the progress.
-- **Copy** one result with the copy button, or everything with **Copy All**.
+- **Copy** one result with its copy button (or double-click, or Ctrl+C), or everything with **Copy All**.
 - **Check on VirusTotal:** the shield button next to the MD5, SHA1 and SHA256 results opens the VirusTotal report for that hash in your browser. Only the hash is sent, not the file. It is off for HMAC results, because those depend on your key.
 - **Hash a whole folder**, then export the results as CSV or as a checksum file.
 - **Right-click menu in Explorer** (optional): "Calculate hash with HashCalc".
@@ -40,8 +42,28 @@ So I made my own version. It grew from my old hash code, which was command line 
 2. Choose a file, or just type or paste text. **Data Format** changes by itself: a path selects *File*, other text selects *Text string*. For hex input, choose *Hex string* yourself.
 3. Tick the hash types you want. **All** ticks or clears every box.
 4. Click **Calculate**. While it works, the same button says **Cancel**, so you can stop it.
+5. The results appear in the list. Click the copy icon (or double-click the row) to copy a result. Right-click a row for more options.
+
+You can make the window wider and taller to see long results. Hover over a result to see all of it.
 
 HashCalc remembers the hash types you ticked for next time. **File > Reset** (Ctrl+R) clears everything and goes back to the default settings.
+
+## PE and similarity hashes
+
+Turn on **View > PE & Similarity Hashes** to show five more hash types. They are used by malware analysts and on sites like VirusTotal and MalwareBazaar.
+
+| Hash | What it tells you |
+|---|---|
+| **Imphash** | a hash of the functions a program imports. Programs built from the same code often share it. |
+| **Authentihash** | the hash Windows uses for code signing (SHA256). It ignores the signature, so it is the same for a signed and an unsigned copy of a program. |
+| **RichHash** | a hash of the hidden "Rich" header that Microsoft's linker writes. It tells you about the build tools used. |
+| **ssdeep** | a fuzzy hash: files that are almost the same get similar values. |
+| **TLSH** | another similarity hash (Trend Micro). Good at finding near-duplicate files. |
+
+- Imphash, Authentihash and RichHash only work on Windows programs (`.exe`, `.dll`, `.sys` ...). For other files the list shows a short note like *(not a Windows program)*.
+- TLSH needs at least 50 bytes of data.
+- The values match the common tools: `pefile`, `signify`, `ssdeep` and `py-tlsh`.
+- **Vhash** (VirusTotal's own similarity hash) is not included, because VirusTotal has not published how it works.
 
 ## Hash a folder
 
@@ -106,6 +128,7 @@ Useful options:
 | Option | Meaning |
 |---|---|
 | `-md5`, `-sha256`, ... | choose hash types (default: SHA256) |
+| `-imphash`, `-authentihash`, `-richhash`, `-ssdeep`, `-tlsh` | PE and similarity hashes |
 | `-a md5,sha1` / `-all` | a list of hash types / all of them |
 | `-r` | include subfolders |
 | `-s "text"` / `-x 616263` | hash a text / hex string |
@@ -153,7 +176,7 @@ hashcalc/
 ├─ Common.props           shared build settings (small, portable Release build)
 ├─ build.bat              release build, writes dist\<arch>\HashCalc.exe
 ├─ src/
-│  ├─ core/               hash algorithms (Hashes) and file/folder hashing (FileHash)
+│  ├─ core/               hash algorithms (Hashes, PeHashes, FuzzyHashes) and file/folder hashing (FileHash)
 │  ├─ gui/                main window, Folder Hash window, settings and Explorer menu
 │  ├─ cli/                command line mode
 │  ├─ common/             small helpers (paths, clipboard, window layout)
@@ -161,7 +184,8 @@ hashcalc/
 ├─ res/                   dialogs, menus, icon, manifest and version info
 ├─ docs/                  images (see below)
 └─ tools/
-   └─ make_icon.py        makes res/HashCalc.ico
+   ├─ make_icon.py        makes res/HashCalc.ico
+   └─ gen_tables.py       makes the TLSH and Imphash tables in src/core/*.inc
 ```
 
 `build/` and `dist/` are created when you build. Git ignores them.
@@ -174,3 +198,9 @@ hashcalc/
 | `folder-hash.png` | screenshot of the Folder Hash window (used above) |
 | `icon.png` | the app icon, the Arabic letter H (هـ) |
 | `hashcalc.png` | the original SlavaSoft HashCalc window that inspired this project |
+
+## Credits
+
+- **TLSH** tables come from the [TLSH reference code](https://github.com/trendmicro/tlsh) by Trend Micro (Apache License 2.0 or BSD).
+- **Imphash** ordinal names come from [pefile](https://github.com/erocarrera/pefile) by Ero Carrera (MIT license). Imphash itself was made by Mandiant.
+- **ssdeep** is the fuzzy hash by Jesse Kornblum. HashCalc has its own code for it that gives the same results.

@@ -83,11 +83,19 @@ std::wstring LongPath(const std::wstring& path)
 {
     if (path.size() < 3 || path.compare(0, 4, L"\\\\?\\") == 0)
         return path;
-    if (path.compare(0, 2, L"\\\\") == 0)
-        return L"\\\\?\\UNC\\" + path.substr(2);   // \\server\share -> \\?\UNC\server\share
-    if (path[1] == L':' && (path[2] == L'\\' || path[2] == L'/'))
-        return L"\\\\?\\" + path;
-    return path;
+    bool unc = (path[0] == L'\\' || path[0] == L'/') && (path[1] == L'\\' || path[1] == L'/');
+    bool drive = path[1] == L':' && (path[2] == L'\\' || path[2] == L'/');
+    if (!unc && !drive)
+        return path;
+    // \\?\ turns off Windows' own clean-up, so fix '/' and '.'/'..' first
+    std::wstring full(32768, L'\0');
+    DWORD n = GetFullPathNameW(path.c_str(), static_cast<DWORD>(full.size()), full.data(), nullptr);
+    if (n == 0 || n >= full.size())
+        return path;
+    full.resize(n);
+    if (full.compare(0, 2, L"\\\\") == 0)
+        return L"\\\\?\\UNC\\" + full.substr(2);   // \\server\share -> \\?\UNC\server\share
+    return L"\\\\?\\" + full;
 }
 
 bool IsDirectory(const std::wstring& path)

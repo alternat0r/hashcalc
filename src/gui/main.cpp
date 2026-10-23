@@ -6,6 +6,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <atomic>
@@ -43,7 +44,7 @@ constexpr size_t kMaxQueuedChunks = 16;      // per algorithm; bounds memory use
 constexpr int kProgressRange = 1000;
 constexpr UINT_PTR kProgressTimer = 1;
 constexpr UINT_PTR kCopyAllTimer = 2;
-constexpr UINT_PTR kCopyTimerBase = 100;     // + algorithm index
+constexpr UINT_PTR kCopyRowTimer = 3;        // copy checkmark in a result row
 constexpr UINT kProgressIntervalMs = 100;
 constexpr UINT kCopyFeedbackMs = 1000;
 constexpr UINT kSysCmdAbout = 0x0110;        // system menu items; below 0xF000, low 4 bits clear
@@ -108,7 +109,13 @@ AnchorLayout g_layout;
 std::unique_ptr<CalcJob> g_job;
 std::thread g_worker;
 bool g_rowDone[kHashAlgCount] = {};      // result shown (UI thread only)
-int g_rowPercent[kHashAlgCount] = {};    // percentage currently shown, -1 = none
+int g_rowProgress[kHashAlgCount] = {};   // 0..kProgressRange while a row is working
+std::wstring g_results[kHashAlgCount];   // value shown in each result row
+std::vector<int> g_rows;                 // algorithm shown in each list row
+int g_copiedAlg = -1;                    // row showing the copy checkmark
+bool g_showExtended = false;             // View > PE & Similarity Hashes
+bool g_extendedLayoutShown = true;       // the dialog is designed with them shown
+bool g_layoutPaused = false;             // while ApplyExtendedView moves controls
 std::atomic<bool> g_cancel{ false };
 bool g_userCancelled = false;            // Cancel button pressed (UI thread only)
 HANDLE g_instanceMutex = nullptr;        // held while Single Instance is on
@@ -144,7 +151,7 @@ void HashThread(AlgTask& task, int alg)
             task.hasher->Update(chunk->data(), chunk->size());
             task.processed += chunk->size();
         }
-        task.result = ToHex(task.hasher->Finish());
+        task.result = task.hasher->FinishText();
     }
     catch (const std::exception&)
     {
@@ -359,39 +366,105 @@ bool IsBusy()
     return g_worker.joinable();
 }
 
-// Sets a progress bar without the themed "glide" animation, which lags far
-// behind for quick jobs. Moving backwards is not animated, so overshoot by
-// one and step back (temporarily widening the range when setting 100%).
-void SetProgress(HWND dlg, int alg, int pos)
+// ---------------------------------------------------------------------------
+// Hash types (checkbox grid) and the results list
+// ---------------------------------------------------------------------------
+
+// Order of the checkbox grid and of the result rows.
+const HashAlg kDisplayOrder[] = {
+    HashAlg::MD5, HashAlg::SHA1, HashAlg::SHA256, HashAlg::SHA384,
+    HashAlg::SHA512, HashAlg::MD4, HashAlg::MD2, HashAlg::RIPEMD160,
+    HashAlg::TIGER, HashAlg::PANAMA, HashAlg::ADLER32, HashAlg::CRC32,
+    HashAlg::EDONKEY, HashAlg::IMPHASH, HashAlg::AUTHENTIHASH, HashAlg::RICHHASH,
+    HashAlg::SSDEEP, HashAlg::TLSH,
+};
+
+enum ResultColumn { ColName, ColValue, ColCopy, ColVirusTotal };
+
+HWND ResultList(HWND dlg)
 {
-    HWND bar = GetDlgItem(dlg, IDC_PROG_BASE + alg);
-    if (SendMessageW(bar, PBM_GETPOS, 0, 0) == pos)
-        return;
-    if (pos >= kProgressRange)
-    {
-        SendMessageW(bar, PBM_SETRANGE32, 0, kProgressRange + 1);
-        SendMessageW(bar, PBM_SETPOS, kProgressRange + 1, 0);
-        SendMessageW(bar, PBM_SETPOS, kProgressRange, 0);
-        SendMessageW(bar, PBM_SETRANGE32, 0, kProgressRange);
-    }
-    else
-    {
-        SendMessageW(bar, PBM_SETPOS, pos + 1, 0);
-        SendMessageW(bar, PBM_SETPOS, pos, 0);
-    }
+    return GetDlgItem(dlg, IDC_RESULTS);
+}
+
+// Hidden types (View > PE & Similarity Hashes off) are not shown or computed.
+bool IsVisibleType(int alg)
+{
+    return g_showExtended || !IsExtendedHash(static_cast<HashAlg>(alg));
+}
+
+// Ticked, visible and usable (HMAC limits the types) - these get a result row.
+bool IsTypeSelected(HWND dlg, int alg)
+{
+    bool hmac = IsChecked(dlg, IDC_HMAC);
+    return IsVisibleType(alg) && IsChecked(dlg, IDC_CHK_BASE + alg) &&
+        (!hmac || SupportsHmac(static_cast<HashAlg>(alg)));
+}
+
+bool IsShowingPercent(int alg)
+{
+    return IsBusy() && g_job && g_job->selected[alg] && !g_rowDone[alg];
+}
+
+int RowOf(int alg)
+{
+    for (size_t r = 0; r < g_rows.size(); ++r)
+        if (g_rows[r] == alg)
+            return static_cast<int>(r);
+    return -1;
+}
+
+void RedrawRow(HWND dlg, int alg)
+{
+    int row = RowOf(alg);
+    if (row >= 0)
+        ListView_RedrawItems(ResultList(dlg), row, row);
+}
+
+// Value column fills the width left by the name and the two icon columns.
+void SizeResultColumns(HWND dlg)
+{
+    HWND list = ResultList(dlg);
+    RECT client;
+    GetClientRect(list, &client);
+    const int dpi = static_cast<int>(GetDpiForWindow(dlg));
+    const int name = MulDiv(84, dpi, 96);
+    const int icon = MulDiv(26, dpi, 96);
+    ListView_SetColumnWidth(list, ColName, name);
+    ListView_SetColumnWidth(list, ColValue, std::max<int>(MulDiv(60, dpi, 96), client.right - name - 2 * icon));
+    ListView_SetColumnWidth(list, ColCopy, icon);
+    ListView_SetColumnWidth(list, ColVirusTotal, icon);
+}
+
+// One row per selected type, in grid order.
+void RebuildResultRows(HWND dlg)
+{
+    g_rows.clear();
+    for (HashAlg a : kDisplayOrder)
+        if (IsTypeSelected(dlg, static_cast<int>(a)))
+            g_rows.push_back(static_cast<int>(a));
+    HWND list = ResultList(dlg);
+    ListView_SetItemCountEx(list, static_cast<int>(g_rows.size()), LVSICF_NOSCROLL);
+    InvalidateRect(list, nullptr, TRUE);
+    SizeResultColumns(dlg);   // a scrollbar may have appeared or gone
+}
+
+void SetResult(HWND dlg, int alg, const std::wstring& text)
+{
+    g_results[alg] = text;
+    RedrawRow(dlg, alg);
 }
 
 // Reflects the hash checkboxes in the "All" checkbox (checked / partial / unchecked).
 void UpdateAllCheckbox(HWND dlg)
 {
-    int enabled = 0, checked = 0;
+    int available = 0, checked = 0;
     for (int i = 0; i < kHashAlgCount; ++i)
     {
-        if (!IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i))) continue;
-        ++enabled;
+        if (!IsVisibleType(i) || !IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i))) continue;
+        ++available;
         if (IsChecked(dlg, IDC_CHK_BASE + i)) ++checked;
     }
-    UINT state = checked == 0 ? BST_UNCHECKED : checked == enabled ? BST_CHECKED : BST_INDETERMINATE;
+    UINT state = checked == 0 ? BST_UNCHECKED : checked == available ? BST_CHECKED : BST_INDETERMINATE;
     CheckDlgButton(dlg, IDC_CHK_ALL, state);
 }
 
@@ -400,9 +473,10 @@ void OnCheckAll(HWND dlg)
     // Fully checked -> clear all; unchecked or partial -> check all
     UINT state = IsDlgButtonChecked(dlg, IDC_CHK_ALL) == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED;
     for (int i = 0; i < kHashAlgCount; ++i)
-        if (IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i)))
+        if (IsVisibleType(i) && IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i)))
             CheckDlgButton(dlg, IDC_CHK_BASE + i, state);
     UpdateAllCheckbox(dlg);
+    RebuildResultRows(dlg);
 }
 
 void UpdateControlStates(HWND dlg)
@@ -437,22 +511,14 @@ void ClearResults(HWND dlg)
 {
     for (int i = 0; i < kHashAlgCount; ++i)
     {
-        SetDlgItemTextW(dlg, IDC_OUT_BASE + i, L"");
-        SetProgress(dlg, i, 0);
+        g_results[i].clear();
+        g_rowProgress[i] = 0;
     }
+    InvalidateRect(ResultList(dlg), nullptr, TRUE);
 }
 
-// While a row is calculating, its output box shows the percentage (in grey,
-// see WM_CTLCOLORSTATIC) until the hash replaces it.
-void ShowPercent(HWND dlg, int alg, int percent)
-{
-    if (g_rowDone[alg] || g_rowPercent[alg] == percent)
-        return;
-    g_rowPercent[alg] = percent;
-    SetDlgItemTextW(dlg, IDC_OUT_BASE + alg, (std::to_wstring(percent) + L"%").c_str());
-}
-
-// Called on a timer while a calculation runs.
+// Called on a timer while a calculation runs: the rows still working show a
+// grey percentage with a thin progress line under it.
 void RefreshProgress(HWND dlg)
 {
     if (!g_job)
@@ -463,19 +529,17 @@ void RefreshProgress(HWND dlg)
         if (!g_job->selected[i] || g_rowDone[i]) continue;
         uint64_t done = g_job->tasks[i].processed;
         int pos = total ? static_cast<int>(std::min<uint64_t>(done, total) * kProgressRange / total) : 0;
-        SetProgress(dlg, i, pos);
-        ShowPercent(dlg, i, std::min(pos * 100 / kProgressRange, 99));   // 100% = the result itself
+        if (pos != g_rowProgress[i])
+        {
+            g_rowProgress[i] = pos;
+            RedrawRow(dlg, i);
+        }
     }
-}
-
-bool IsShowingPercent(int alg)
-{
-    return IsBusy() && g_job && g_job->selected[alg] && !g_rowDone[alg];
 }
 
 // ---------------------------------------------------------------------------
 // VirusTotal lookup. Its file page accepts MD5, SHA1 and SHA256, so only those
-// rows have the button. Only the hash goes to VirusTotal (in the browser).
+// rows have the shield. Only the hash goes to VirusTotal (in the browser).
 // ---------------------------------------------------------------------------
 bool SupportsVirusTotal(int alg)
 {
@@ -487,21 +551,23 @@ bool SupportsVirusTotal(int alg)
 // and not an HMAC (that depends on the key, so VirusTotal cannot know it).
 bool IsVirusTotalHash(int alg, const std::wstring& text)
 {
+    if (!SupportsVirusTotal(alg))
+        return false;
     size_t length = alg == static_cast<int>(HashAlg::MD5) ? 32 : alg == static_cast<int>(HashAlg::SHA1) ? 40 : 64;
     return !g_resultsAreHmac && text.size() == length &&
         std::all_of(text.begin(), text.end(), [](wchar_t c) { return iswxdigit(c) != 0; });
 }
 
-void UpdateVirusTotalButton(HWND dlg, int alg)
+// A real value, not a "(not a Windows program)"-style message.
+bool CanCopy(int alg)
 {
-    if (SupportsVirusTotal(alg))
-        EnableWindow(GetDlgItem(dlg, IDC_VT_BASE + alg), IsVirusTotalHash(alg, GetDlgText(dlg, IDC_OUT_BASE + alg)));
+    return !g_results[alg].empty() && g_results[alg][0] != L'(' && !IsShowingPercent(alg);
 }
 
 void OnVirusTotal(HWND dlg, int alg)
 {
-    std::wstring hash = GetDlgText(dlg, IDC_OUT_BASE + alg);
-    if (!SupportsVirusTotal(alg) || !IsVirusTotalHash(alg, hash))
+    std::wstring hash = g_results[alg];
+    if (IsShowingPercent(alg) || !IsVirusTotalHash(alg, hash))
         return;
     CharLowerBuffW(hash.data(), static_cast<DWORD>(hash.size()));
     ShellExecuteW(dlg, L"open", (kVirusTotalUrl + hash).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -509,12 +575,16 @@ void OnVirusTotal(HWND dlg, int alg)
 
 void OnCopy(HWND dlg, int alg)
 {
-    if (!CopyToClipboard(dlg, GetDlgText(dlg, IDC_OUT_BASE + alg)))
+    if (!CanCopy(alg) || !CopyToClipboard(dlg, g_results[alg]))
         return;
 
-    // Brief checkmark as feedback
-    SetDlgItemTextW(dlg, IDC_COPY_BASE + alg, kGlyphDone);
-    SetTimer(dlg, kCopyTimerBase + alg, kCopyFeedbackMs, nullptr);
+    // Brief checkmark in the row as feedback
+    int previous = g_copiedAlg;
+    g_copiedAlg = alg;
+    if (previous >= 0)
+        RedrawRow(dlg, previous);
+    RedrawRow(dlg, alg);
+    SetTimer(dlg, kCopyRowTimer, kCopyFeedbackMs, nullptr);
 }
 
 // Copies the input description followed by one "NAME: hash" line per result.
@@ -522,12 +592,11 @@ void OnCopy(HWND dlg, int alg)
 void OnCopyAll(HWND dlg)
 {
     std::wstring results;
-    for (int i = 0; i < kHashAlgCount; ++i)
+    for (int alg : g_rows)
     {
-        std::wstring value = GetDlgText(dlg, IDC_OUT_BASE + i);
-        if (value.empty()) continue;
-        results += HashAlgName(static_cast<HashAlg>(i));
-        results += L": " + value + L"\r\n";
+        if (g_results[alg].empty() || IsShowingPercent(alg)) continue;   // messages are kept
+        results += HashAlgName(static_cast<HashAlg>(alg));
+        results += L": " + g_results[alg] + L"\r\n";
     }
     if (results.empty())
         return;
@@ -545,6 +614,267 @@ void OnCopyAll(HWND dlg)
 
     SetDlgItemTextW(dlg, IDC_COPY_ALL, L"Copied!");
     SetTimer(dlg, kCopyAllTimer, kCopyFeedbackMs, nullptr);
+}
+
+// The copy and VirusTotal columns are drawn as icons (Segoe MDL2 Assets).
+void DrawRowIcon(HWND dlg, const NMLVCUSTOMDRAW* cd, int alg)
+{
+    HWND list = ResultList(dlg);
+    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+    RECT rc;
+    if (!ListView_GetSubItemRect(list, row, cd->iSubItem, LVIR_BOUNDS, &rc))
+        return;
+
+    const bool selected = (ListView_GetItemState(list, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+    const bool focused = GetFocus() == list;
+    COLORREF background = GetSysColor(selected ? (focused ? COLOR_HIGHLIGHT : COLOR_BTNFACE) : COLOR_WINDOW);
+    COLORREF normal = GetSysColor(selected && focused ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT);
+    HDC hdc = cd->nmcd.hdc;
+    SetBkColor(hdc, background);
+    ExtTextOutW(hdc, 0, 0, ETO_OPAQUE, &rc, nullptr, 0, nullptr);
+
+    const wchar_t* glyph = nullptr;
+    bool enabled = false;
+    if (cd->iSubItem == ColCopy)
+    {
+        glyph = g_copiedAlg == alg ? kGlyphDone : kGlyphCopy;
+        enabled = CanCopy(alg);
+    }
+    else if (SupportsVirusTotal(alg))
+    {
+        glyph = kGlyphShield;
+        enabled = !IsShowingPercent(alg) && IsVirusTotalHash(alg, g_results[alg]);
+    }
+    if (!glyph)
+        return;
+    // Unavailable icons: grey text mixed halfway into the background, so they
+    // clearly look inactive next to the working ones.
+    COLORREF grey = GetSysColor(COLOR_GRAYTEXT);
+    COLORREF faded = RGB((GetRValue(grey) + GetRValue(background)) / 2,
+                         (GetGValue(grey) + GetGValue(background)) / 2,
+                         (GetBValue(grey) + GetBValue(background)) / 2);
+    HGDIOBJ oldFont = SelectObject(hdc, g_iconFont);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, enabled ? normal : faded);
+    DrawTextW(hdc, glyph, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, oldFont);
+}
+
+LRESULT OnResultsCustomDraw(HWND dlg, NMLVCUSTOMDRAW* cd)
+{
+    switch (cd->nmcd.dwDrawStage)
+    {
+    case CDDS_PREPAINT:
+        return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT:
+        return CDRF_NOTIFYSUBITEMDRAW;
+    case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+    {
+        const size_t row = cd->nmcd.dwItemSpec;
+        if (row >= g_rows.size())
+            return CDRF_DODEFAULT;
+        const int alg = g_rows[row];
+        if (cd->iSubItem == ColCopy || cd->iSubItem == ColVirusTotal)
+        {
+            DrawRowIcon(dlg, cd, alg);
+            return CDRF_SKIPDEFAULT;
+        }
+        HWND list = ResultList(dlg);
+        const bool highlighted = (ListView_GetItemState(list, static_cast<int>(row), LVIS_SELECTED) & LVIS_SELECTED) &&
+                                 GetFocus() == list;
+        if (cd->iSubItem == ColValue && IsShowingPercent(alg))
+        {
+            cd->clrText = GetSysColor(COLOR_GRAYTEXT);
+            return CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
+        }
+        cd->clrText = GetSysColor(highlighted ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT);
+        return CDRF_NEWFONT;
+    }
+    case CDDS_ITEMPOSTPAINT | CDDS_SUBITEM:
+    {
+        // Thin progress line under the percentage
+        const size_t row = cd->nmcd.dwItemSpec;
+        if (row >= g_rows.size() || cd->iSubItem != ColValue)
+            return CDRF_DODEFAULT;
+        const int alg = g_rows[row];
+        RECT rc;
+        if (IsShowingPercent(alg) && g_rowProgress[alg] > 0 &&
+            ListView_GetSubItemRect(ResultList(dlg), static_cast<int>(row), ColValue, LVIR_BOUNDS, &rc))
+        {
+            const int dpi = static_cast<int>(GetDpiForWindow(dlg));
+            RECT bar = { rc.left + 4, rc.bottom - MulDiv(3, dpi, 96), 0, rc.bottom - 1 };
+            bar.right = bar.left + MulDiv(rc.right - rc.left - 8, g_rowProgress[alg], kProgressRange);
+            HBRUSH green = CreateSolidBrush(RGB(6, 176, 37));
+            FillRect(cd->nmcd.hdc, &bar, green);
+            DeleteObject(green);
+        }
+        return CDRF_DODEFAULT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
+void ShowResultMenu(HWND dlg, int alg, POINT screen)
+{
+    HMENU menu = CreatePopupMenu();
+    if (alg >= 0)
+    {
+        AppendMenuW(menu, MF_STRING | (CanCopy(alg) ? 0 : MF_GRAYED), 1, L"&Copy");
+        if (SupportsVirusTotal(alg))
+            AppendMenuW(menu, MF_STRING | (!IsShowingPercent(alg) && IsVirusTotalHash(alg, g_results[alg]) ? 0 : MF_GRAYED),
+                2, L"Check on &VirusTotal");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
+    AppendMenuW(menu, MF_STRING, 3, L"Copy &All");
+    int choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y, 0, dlg, nullptr);
+    DestroyMenu(menu);
+    if (choice == 1) OnCopy(dlg, alg);
+    else if (choice == 2) OnVirusTotal(dlg, alg);
+    else if (choice == 3) OnCopyAll(dlg);
+}
+
+int SelectedRowAlg(HWND dlg)
+{
+    int row = ListView_GetNextItem(ResultList(dlg), -1, LVNI_SELECTED);
+    return row >= 0 && row < static_cast<int>(g_rows.size()) ? g_rows[row] : -1;
+}
+
+// WM_NOTIFY from the results list. Returns true if handled (result in *result).
+bool OnResultsNotify(HWND dlg, NMHDR* header, LRESULT* result)
+{
+    *result = 0;
+    switch (header->code)
+    {
+    case LVN_GETDISPINFOW:
+    {
+        auto* info = reinterpret_cast<NMLVDISPINFOW*>(header);
+        const size_t row = static_cast<size_t>(info->item.iItem);
+        if (!(info->item.mask & LVIF_TEXT) || row >= g_rows.size())
+            return true;
+        const int alg = g_rows[row];
+        std::wstring text;
+        if (info->item.iSubItem == ColName)
+            text = HashAlgName(static_cast<HashAlg>(alg));
+        else if (info->item.iSubItem == ColValue)
+            text = IsShowingPercent(alg) ? std::to_wstring(std::min(g_rowProgress[alg] / 10, 99)) + L"%" : g_results[alg];
+        wcsncpy_s(info->item.pszText, info->item.cchTextMax, text.c_str(), _TRUNCATE);
+        return true;
+    }
+    case LVN_GETINFOTIPW:
+    {
+        auto* tip = reinterpret_cast<NMLVGETINFOTIPW*>(header);
+        const size_t row = static_cast<size_t>(tip->iItem);
+        if (row >= g_rows.size())
+            return true;
+        const int alg = g_rows[row];
+        std::wstring text = std::wstring(HashAlgName(static_cast<HashAlg>(alg))) + L": " +
+            (g_results[alg].empty() ? L"(not calculated)" : g_results[alg]);
+        text += SupportsVirusTotal(alg) ? L"\nClick the copy icon to copy, or the shield to check it on VirusTotal."
+                                        : L"\nClick the copy icon (or double-click the row) to copy.";
+        wcsncpy_s(tip->pszText, tip->cchTextMax, text.c_str(), _TRUNCATE);
+        return true;
+    }
+    case NM_CUSTOMDRAW:
+        *result = OnResultsCustomDraw(dlg, reinterpret_cast<NMLVCUSTOMDRAW*>(header));
+        return true;
+    case NM_CLICK:
+    case NM_DBLCLK:
+    {
+        auto* click = reinterpret_cast<NMITEMACTIVATE*>(header);
+        if (click->iItem < 0 || click->iItem >= static_cast<int>(g_rows.size()))
+            return true;
+        const int alg = g_rows[click->iItem];
+        if (header->code == NM_DBLCLK || click->iSubItem == ColCopy)
+            OnCopy(dlg, alg);
+        else if (click->iSubItem == ColVirusTotal)
+            OnVirusTotal(dlg, alg);
+        return true;
+    }
+    case LVN_KEYDOWN:
+    {
+        auto* key = reinterpret_cast<NMLVKEYDOWN*>(header);
+        if (key->wVKey == 'C' && (GetKeyState(VK_CONTROL) & 0x8000) && SelectedRowAlg(dlg) >= 0)
+            OnCopy(dlg, SelectedRowAlg(dlg));
+        return true;
+    }
+    }
+    return false;
+}
+
+void InitResultList(HWND dlg)
+{
+    HFONT dlgFont = reinterpret_cast<HFONT>(SendMessageW(dlg, WM_GETFONT, 0, 0));
+    LOGFONTW lf = {};
+    GetObjectW(dlgFont, sizeof(lf), &lf);
+    lf.lfWeight = FW_NORMAL;
+    lf.lfItalic = FALSE;
+    lf.lfUnderline = FALSE;
+    wcscpy_s(lf.lfFaceName, L"Segoe MDL2 Assets");
+    g_iconFont = CreateFontIndirectW(&lf);
+
+    HWND list = ResultList(dlg);
+    ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
+    const wchar_t* titles[] = { L"Type", L"Value", L"Copy", L"VirusTotal" };
+    for (int c = 0; c < 4; ++c)
+    {
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.pszText = const_cast<LPWSTR>(titles[c]);
+        col.cx = 40;
+        ListView_InsertColumn(list, c, &col);
+    }
+    if (HWND tooltip = ListView_GetToolTips(list))
+        SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 420);   // wrap long hashes
+}
+
+// ---------------------------------------------------------------------------
+// View > PE & Similarity Hashes. The dialog is designed with those types
+// shown; hiding them removes the last grid row and moves the list and the
+// buttons up by that row.
+// ---------------------------------------------------------------------------
+void ApplyExtendedView(HWND dlg, bool show)
+{
+    if (show == g_extendedLayoutShown)
+        return;
+    for (int i = 0; i < kHashAlgCount; ++i)
+        if (IsExtendedHash(static_cast<HashAlg>(i)))
+            ShowWindow(GetDlgItem(dlg, IDC_CHK_BASE + i), show ? SW_SHOW : SW_HIDE);
+
+    RECT row = { 0, 0, 0, 12 };   // one grid row (dialog units)
+    MapDialogRect(dlg, &row);
+    const int shift = show ? row.bottom : -row.bottom;
+
+    g_layoutPaused = true;   // positions are set here, not by the anchors
+    for (int id : { IDC_RESULTS, IDC_LOGO, IDC_CALCULATE, IDCANCEL, IDC_HELPBTN })
+    {
+        HWND ctl = GetDlgItem(dlg, id);
+        RECT r;
+        GetWindowRect(ctl, &r);
+        MapWindowPoints(nullptr, dlg, reinterpret_cast<POINT*>(&r), 2);
+        SetWindowPos(ctl, nullptr, r.left, r.top + shift, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    RECT window;
+    GetWindowRect(dlg, &window);
+    SetWindowPos(dlg, nullptr, 0, 0, window.right - window.left, window.bottom - window.top + shift,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    g_layoutPaused = false;
+
+    g_layout.Capture(dlg);   // the new positions are the base for resizing
+    g_extendedLayoutShown = show;
+    InvalidateRect(dlg, nullptr, TRUE);
+}
+
+void OnToggleExtended(HWND dlg)
+{
+    if (IsBusy())
+        return;
+    Settings settings = LoadSettings();
+    settings.showExtended = !settings.showExtended;
+    SaveSettings(settings);
+    g_showExtended = settings.showExtended;
+    ApplyExtendedView(dlg, g_showExtended);
+    UpdateAllCheckbox(dlg);
+    RebuildResultRows(dlg);
 }
 
 bool OnBrowse(HWND dlg)
@@ -661,7 +991,7 @@ void OnCalculate(HWND dlg)
     bool any = false;
     for (int i = 0; i < kHashAlgCount; ++i)
     {
-        job->selected[i] = IsChecked(dlg, IDC_CHK_BASE + i) && IsWindowEnabled(GetDlgItem(dlg, IDC_CHK_BASE + i));
+        job->selected[i] = IsTypeSelected(dlg, i);
         any = any || job->selected[i];
     }
 
@@ -684,10 +1014,8 @@ void OnCalculate(HWND dlg)
     g_resultsAreHmac = job->hmac;
     ClearResults(dlg);
     for (int i = 0; i < kHashAlgCount; ++i)
-    {
         g_rowDone[i] = false;
-        g_rowPercent[i] = -1;
-    }
+    RebuildResultRows(dlg);
     g_job = std::move(job);
     g_cancel = false;
     g_worker = std::thread(WorkerMain, dlg);
@@ -848,11 +1176,8 @@ void OnCalcDone(HWND dlg)
     {
         // Keep the hashes that completed, clear the ones that were stopped.
         for (int i = 0; i < kHashAlgCount; ++i)
-        {
-            if (!job->selected[i] || finished[i]) continue;
-            SetDlgItemTextW(dlg, IDC_OUT_BASE + i, L"");
-            SetProgress(dlg, i, 0);
-        }
+            if (job->selected[i] && !finished[i])
+                SetResult(dlg, i, L"");
         return;
     }
 
@@ -863,11 +1188,8 @@ void OnCalcDone(HWND dlg)
         return;
     }
     for (int i = 0; i < kHashAlgCount; ++i)
-    {
-        if (!job->selected[i]) continue;
-        SetDlgItemTextW(dlg, IDC_OUT_BASE + i, job->tasks[i].result.c_str());
-        SetProgress(dlg, i, job->tasks[i].hasher ? kProgressRange : 0);
-    }
+        if (job->selected[i])
+            SetResult(dlg, i, job->tasks[i].result);
 }
 
 void OnTaskDone(HWND dlg, int alg)
@@ -875,8 +1197,7 @@ void OnTaskDone(HWND dlg, int alg)
     if (!g_job)
         return;
     g_rowDone[alg] = true;
-    SetDlgItemTextW(dlg, IDC_OUT_BASE + alg, g_job->tasks[alg].result.c_str());
-    SetProgress(dlg, alg, kProgressRange);
+    SetResult(dlg, alg, g_job->tasks[alg].result);
 }
 
 void OnHelp(HWND dlg)
@@ -891,8 +1212,11 @@ void OnHelp(HWND dlg)
         L"While it runs, the same button cancels.\n\n"
         L"File > Reset (Ctrl+R) clears everything and restores the default settings.\n\n"
         L"Each algorithm runs on its own thread; the bar under each result shows its progress. "
-        L"Use the button next to a result to copy it to the clipboard, or \"Copy All\" for every result. "
-        L"The shield button (MD5, SHA1 and SHA256) looks the hash up on VirusTotal in your browser.\n\n"
+        L"Each ticked type gets a row in the list. Click the copy icon (or double-click the row, or "
+        L"press Ctrl+C) to copy it; \"Copy All\" copies every result. The shield (MD5, SHA1 and SHA256) "
+        L"looks the hash up on VirusTotal in your browser. Right-click a row for the same options.\n\n"
+        L"View > PE & Similarity Hashes adds Imphash, Authentihash and RichHash (for Windows programs) "
+        L"and the similarity hashes ssdeep and TLSH.\n\n"
         L"File > Hash Folder (or dropping a folder on the window) hashes every file in a folder "
         L"with the algorithms ticked here, and can export the results as CSV or a checksum file.\n\n"
         L"Settings > Add to Explorer Context Menu adds \"Calculate hash with HashCalc\" for files "
@@ -983,7 +1307,10 @@ void OnReset(HWND dlg)
     SaveSettings(defaults);
     ReleaseSingleInstance();   // Single Instance is off by default
     g_pendingFiles.clear();
+    g_showExtended = false;    // PE & similarity hashes are hidden by default
+    ApplyExtendedView(dlg, false);
     UpdateControlStates(dlg);
+    RebuildResultRows(dlg);
 }
 
 // Default folder for Add to PATH: %LOCALAPPDATA%\Programs\HashCalc, which only
@@ -1206,6 +1533,8 @@ void OnInitMenuPopup(HWND dlg, HMENU menu)
     CheckMenuItem(menu, IDM_SETTINGS_PATH, MF_BYCOMMAND | (IsOnPath() ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_TOPMOST, MF_BYCOMMAND | (IsAlwaysOnTop(dlg) ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(menu, IDM_SETTINGS_SINGLE, MF_BYCOMMAND | (LoadSettings().singleInstance ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(menu, IDM_VIEW_EXTENDED, MF_BYCOMMAND | (g_showExtended ? MF_CHECKED : MF_UNCHECKED));
+    EnableMenuItem(menu, IDM_VIEW_EXTENDED, MF_BYCOMMAND | (IsBusy() ? MF_GRAYED : MF_ENABLED));
     CheckMenuItem(menu, IDM_SETTINGS_SHELL, MF_BYCOMMAND |
         (IsShellIntegrationInstalled() ? MF_CHECKED : MF_UNCHECKED));
     EnableMenuItem(menu, IDM_FILE_OPEN, MF_BYCOMMAND | (IsBusy() ? MF_GRAYED : MF_ENABLED));
@@ -1227,52 +1556,8 @@ void SaveMainSettings(HWND dlg)
     SaveSettings(settings);
 }
 
-void InitCopyButtons(HWND dlg)
-{
-    HFONT dlgFont = reinterpret_cast<HFONT>(SendMessageW(dlg, WM_GETFONT, 0, 0));
-    LOGFONTW lf = {};
-    GetObjectW(dlgFont, sizeof(lf), &lf);
-    lf.lfWeight = FW_NORMAL;
-    lf.lfItalic = FALSE;
-    lf.lfUnderline = FALSE;
-    wcscpy_s(lf.lfFaceName, L"Segoe MDL2 Assets");
-    g_iconFont = CreateFontIndirectW(&lf);
-
-    HWND tooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
-        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, dlg, nullptr, nullptr, nullptr);
-
-    for (int i = 0; i < kHashAlgCount; ++i)
-    {
-        HWND button = GetDlgItem(dlg, IDC_COPY_BASE + i);
-        SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(g_iconFont), FALSE);
-        SetWindowTextW(button, kGlyphCopy);
-
-        TTTOOLINFOW ti = { sizeof(ti) };
-        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-        ti.hwnd = dlg;
-        ti.uId = reinterpret_cast<UINT_PTR>(button);
-        ti.lpszText = const_cast<LPWSTR>(L"Copy to clipboard");
-        SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
-
-        SendDlgItemMessageW(dlg, IDC_PROG_BASE + i, PBM_SETRANGE32, 0, kProgressRange);
-
-        if (SupportsVirusTotal(i))
-        {
-            HWND vt = GetDlgItem(dlg, IDC_VT_BASE + i);
-            SendMessageW(vt, WM_SETFONT, reinterpret_cast<WPARAM>(g_iconFont), FALSE);
-            SetWindowTextW(vt, kGlyphShield);
-            ti.uId = reinterpret_cast<UINT_PTR>(vt);
-            ti.lpszText = const_cast<LPWSTR>(
-                L"Check this hash on VirusTotal (opens your browser; only the hash is sent, not the file)");
-            SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
-            UpdateVirusTotalButton(dlg, i);
-        }
-    }
-    SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 300);   // wrap the longer tooltip
-}
-
-// Widening the window stretches the inputs, outputs and progress bars and keeps
-// the buttons on the right edge. The height is fixed.
+// Resizing: the inputs and the results list widen; the list also grows in
+// height; the buttons stay at the right / bottom edge.
 void InitLayout(HWND dlg)
 {
     using A = AnchorLayout;
@@ -1281,19 +1566,11 @@ void InitLayout(HWND dlg)
     g_layout.Add(IDC_KEY, A::GrowX);
     g_layout.Add(IDC_SEP_TOP, A::GrowX);
     g_layout.Add(IDC_COPY_ALL, A::MoveX);
-    for (int i = 0; i < kHashAlgCount; ++i)
-    {
-        g_layout.Add(IDC_OUT_BASE + i, A::GrowX);
-        g_layout.Add(IDC_COPY_BASE + i, A::MoveX);
-        if (SupportsVirusTotal(i))
-            g_layout.Add(IDC_VT_BASE + i, A::MoveX);
-        g_layout.Add(IDC_PROG_BASE + i, A::GrowX);
-    }
-    g_layout.Add(IDC_SEP_MID, A::GrowX);
-    g_layout.Add(IDC_SEP_BOTTOM, A::GrowX);
-    g_layout.Add(IDC_CALCULATE, A::MoveX);
-    g_layout.Add(IDCANCEL, A::MoveX);
-    g_layout.Add(IDC_HELPBTN, A::MoveX);
+    g_layout.Add(IDC_RESULTS, A::GrowX | A::GrowY);
+    g_layout.Add(IDC_LOGO, A::MoveY);
+    g_layout.Add(IDC_CALCULATE, A::MoveX | A::MoveY);
+    g_layout.Add(IDCANCEL, A::MoveX | A::MoveY);
+    g_layout.Add(IDC_HELPBTN, A::MoveX | A::MoveY);
     g_layout.Capture(dlg);
 }
 
@@ -1322,7 +1599,9 @@ void OnInitDialog(HWND dlg)
     SendMessageW(keyFmt, CB_SETCURSEL, KeyHex, 0);
 
     // Remembered algorithm selection (also used by Explorer launches)
-    DWORD algorithms = LoadSettings().algorithms;
+    const Settings settings = LoadSettings();
+    DWORD algorithms = settings.algorithms;
+    g_showExtended = settings.showExtended;
     for (int i = 0; i < kHashAlgCount; ++i)
         CheckDlgButton(dlg, IDC_CHK_BASE + i, (algorithms >> i) & 1 ? BST_CHECKED : BST_UNCHECKED);
 
@@ -1344,9 +1623,11 @@ void OnInitDialog(HWND dlg)
     if (LoadSettings().alwaysOnTop)
         ApplyAlwaysOnTop(dlg, true);
 
-    InitCopyButtons(dlg);
+    InitResultList(dlg);
     InitLayout(dlg);
+    ApplyExtendedView(dlg, g_showExtended);
     UpdateControlStates(dlg);
+    RebuildResultRows(dlg);
 
     if (!g_startup.file.empty())
     {
@@ -1376,26 +1657,10 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND:
     {
         int id = LOWORD(wParam);
-        if (id >= IDC_VT_BASE && id < IDC_VT_BASE + kHashAlgCount)
-        {
-            OnVirusTotal(dlg, id - IDC_VT_BASE);
-            return TRUE;
-        }
-        if (id >= IDC_OUT_BASE && id < IDC_OUT_BASE + kHashAlgCount)
-        {
-            // An output box changed (result, percentage or cleared).
-            if (HIWORD(wParam) == EN_CHANGE)
-                UpdateVirusTotalButton(dlg, id - IDC_OUT_BASE);
-            return TRUE;
-        }
-        if (id >= IDC_COPY_BASE && id < IDC_COPY_BASE + kHashAlgCount)
-        {
-            OnCopy(dlg, id - IDC_COPY_BASE);
-            return TRUE;
-        }
         if (id >= IDC_CHK_BASE && id < IDC_CHK_BASE + kHashAlgCount)
         {
             UpdateAllCheckbox(dlg);
+            RebuildResultRows(dlg);
             return TRUE;
         }
         switch (id)
@@ -1444,6 +1709,10 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
             return TRUE;
         case IDC_HMAC:
             UpdateControlStates(dlg);
+            RebuildResultRows(dlg);
+            return TRUE;
+        case IDM_VIEW_EXTENDED:
+            OnToggleExtended(dlg);
             return TRUE;
         case IDC_DATAFORMAT:
             if (HIWORD(wParam) == CBN_SELCHANGE)
@@ -1478,39 +1747,65 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
         // Background and labels drag the window like the title bar.
         return DragAnywhereHitTest(dlg, wParam, lParam);
 
-    case WM_CTLCOLORSTATIC:
+    case WM_NOTIFY:
     {
-        // Read-only output boxes: grey text while they show a percentage.
-        int id = GetDlgCtrlID(reinterpret_cast<HWND>(lParam));
-        if (id >= IDC_OUT_BASE && id < IDC_OUT_BASE + kHashAlgCount && IsShowingPercent(id - IDC_OUT_BASE))
+        auto* header = reinterpret_cast<NMHDR*>(lParam);
+        LRESULT result = 0;
+        if (header->idFrom == IDC_RESULTS && OnResultsNotify(dlg, header, &result))
         {
-            HDC hdc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(hdc, GetSysColor(COLOR_GRAYTEXT));
-            SetBkColor(hdc, GetSysColor(COLOR_BTNFACE));
-            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_BTNFACE));
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, result);
+            return TRUE;
         }
         return FALSE;
     }
+
+    case WM_CONTEXTMENU:
+        if (reinterpret_cast<HWND>(wParam) == ResultList(dlg))
+        {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            int alg = -1;
+            if (pt.x == -1 && pt.y == -1)   // keyboard (Shift+F10 / menu key)
+            {
+                alg = SelectedRowAlg(dlg);
+                RECT r;
+                GetWindowRect(ResultList(dlg), &r);
+                pt = { r.left + 8, r.top + 8 };
+            }
+            else
+            {
+                LVHITTESTINFO hit = {};
+                hit.pt = pt;
+                ScreenToClient(ResultList(dlg), &hit.pt);
+                int row = ListView_HitTest(ResultList(dlg), &hit);
+                if (row >= 0 && row < static_cast<int>(g_rows.size()))
+                {
+                    alg = g_rows[row];
+                    ListView_SetItemState(ResultList(dlg), row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                }
+            }
+            ShowResultMenu(dlg, alg, pt);
+            return TRUE;
+        }
+        return FALSE;
 
     case WM_INITMENUPOPUP:
         OnInitMenuPopup(dlg, reinterpret_cast<HMENU>(wParam));
         return TRUE;
 
     case WM_SIZE:
-        if (wParam != SIZE_MINIMIZED)
+        if (wParam != SIZE_MINIMIZED && !g_layoutPaused)
+        {
             g_layout.Apply(LOWORD(lParam), HIWORD(lParam));
+            SizeResultColumns(dlg);
+        }
         return TRUE;
 
     case WM_GETMINMAXINFO:
     {
-        // Horizontal resizing only: at least the designed size, height locked.
+        // At least the designed size; wider and taller make the list bigger.
         SIZE initial = g_layout.InitialWindowSize();
-        if (initial.cx)
-        {
-            auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            info->ptMinTrackSize = { initial.cx, initial.cy };
-            info->ptMaxTrackSize.y = initial.cy;
-        }
+        if (initial.cx && !g_layoutPaused)
+            reinterpret_cast<MINMAXINFO*>(lParam)->ptMinTrackSize = { initial.cx, initial.cy };
         return TRUE;
     }
 
@@ -1522,10 +1817,13 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
             KillTimer(dlg, wParam);
             SetDlgItemTextW(dlg, IDC_COPY_ALL, L"Copy All");
         }
-        else if (wParam >= kCopyTimerBase && wParam < kCopyTimerBase + kHashAlgCount)
+        else if (wParam == kCopyRowTimer)
         {
             KillTimer(dlg, wParam);
-            SetDlgItemTextW(dlg, IDC_COPY_BASE + static_cast<int>(wParam - kCopyTimerBase), kGlyphCopy);
+            int alg = g_copiedAlg;
+            g_copiedAlg = -1;
+            if (alg >= 0)
+                RedrawRow(dlg, alg);
         }
         return TRUE;
 
@@ -1690,7 +1988,7 @@ bool GetMainHashOptions(HashOptions& options, std::wstring& error)
     for (int i = 0; i < kHashAlgCount; ++i)
     {
         // Not IsWindowEnabled: the checkboxes are disabled while the main window calculates.
-        bool usable = !options.hmac || SupportsHmac(static_cast<HashAlg>(i));
+        bool usable = (!options.hmac || SupportsHmac(static_cast<HashAlg>(i))) && IsVisibleType(i);
         options.selected[i] = usable && IsChecked(dlg, IDC_CHK_BASE + i);
         any = any || options.selected[i];
     }

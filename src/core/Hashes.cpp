@@ -743,9 +743,20 @@ const wchar_t* HashAlgName(HashAlg alg)
     static const wchar_t* const kNames[kHashAlgCount] = {
         L"MD5", L"MD4", L"SHA1", L"SHA256", L"SHA384", L"SHA512",
         L"RIPEMD160", L"PANAMA", L"TIGER", L"MD2", L"ADLER32", L"CRC32",
-        L"eDonkey" };
+        L"eDonkey",
+        L"Imphash", L"Authentihash", L"RichHash", L"ssdeep", L"TLSH" };
     int i = static_cast<int>(alg);
     return i >= 0 && i < kHashAlgCount ? kNames[i] : L"";
+}
+
+bool IsExtendedHash(HashAlg alg)
+{
+    return alg >= HashAlg::IMPHASH && alg < HashAlg::Count;
+}
+
+std::wstring Hasher::FinishText()
+{
+    return ToHex(Finish());
 }
 
 bool IsImplemented(HashAlg /*alg*/)
@@ -762,7 +773,7 @@ bool SupportsHmac(HashAlg alg)
     case HashAlg::EDONKEY:
         return false;
     default:
-        return true;
+        return !IsExtendedHash(alg);   // structure/similarity hashes have no keyed form
     }
 }
 
@@ -796,6 +807,11 @@ std::unique_ptr<Hasher> CreateHasher(HashAlg alg, const std::vector<BYTE>* hmacK
     case HashAlg::CRC32:   return std::make_unique<Crc32Hasher>();
     case HashAlg::ADLER32: return std::make_unique<Adler32Hasher>();
     case HashAlg::EDONKEY: return std::make_unique<EDonkeyHasher>();
+    case HashAlg::IMPHASH:
+    case HashAlg::AUTHENTIHASH:
+    case HashAlg::RICHHASH: return CreatePeHasher(alg);
+    case HashAlg::SSDEEP:  return CreateSsdeepHasher();
+    case HashAlg::TLSH:    return CreateTlshHasher();
     default:               return nullptr;
     }
 }

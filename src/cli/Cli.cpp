@@ -37,6 +37,8 @@ LR"(Usage: HashCalc [options] <file | folder | wildcard> ...
 Algorithms (default: SHA256):
   -md5 -md4 -md2 -sha1 -sha256 -sha384 -sha512 -ripemd160
   -tiger -panama -crc32 -adler32 -edonkey
+  -imphash -authentihash -richhash   (Windows programs: .exe, .dll, .sys ...)
+  -ssdeep -tlsh   similarity hashes (similar files get similar values)
   -a <list>       comma-separated list, e.g. -a md5,sha1,sha256
   -all            all algorithms
 
