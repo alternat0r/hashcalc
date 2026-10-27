@@ -1,4 +1,4 @@
-<img src="docs/icon.png" width="48" align="left" alt="HashCalc icon">
+<img src="docs/icon.png" width="64" align="left" alt="HashCalc icon">
 
 # HashCalc
 
