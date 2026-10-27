@@ -56,6 +56,7 @@ constexpr wchar_t kGlyphDone[] = L"\xE73E";
 constexpr wchar_t kGlyphShield[] = L"\xEA18";
 
 constexpr wchar_t kVirusTotalUrl[] = L"https://www.virustotal.com/gui/file/";
+constexpr wchar_t kRepoUrl[] = L"https://github.com/alternat0r/hashcalc";
 
 // Combo box item indices
 enum DataFormat { DataFile = 0, DataText = 1, DataHex = 2 };
@@ -1228,14 +1229,32 @@ void OnHelp(HWND dlg)
         L"HashCalc Help", MB_ICONINFORMATION);
 }
 
+// TaskDialog instead of MessageBox so the repository link is clickable
+HRESULT CALLBACK AboutCallback(HWND hwnd, UINT msg, WPARAM, LPARAM lParam, LONG_PTR)
+{
+    if (msg == TDN_HYPERLINK_CLICKED)
+        ShellExecuteW(hwnd, L"open", reinterpret_cast<LPCWSTR>(lParam), nullptr, nullptr, SW_SHOWNORMAL);
+    return S_OK;
+}
+
 void OnAbout(HWND dlg)
 {
-    MessageBoxW(dlg,
-        L"HashCalc " VERSION_STR L"\n\n"
+    const std::wstring content =
         L"File, folder and text hash calculator.\n\n"
         L"Algorithms: MD2, MD4, MD5, SHA1, SHA256, SHA384, SHA512, RIPEMD160, "
-        L"PANAMA, TIGER, ADLER32, CRC32 and eDonkey/eMule, with optional HMAC.",
-        L"About HashCalc", MB_ICONINFORMATION);
+        L"PANAMA, TIGER, ADLER32, CRC32 and eDonkey/eMule, with optional HMAC.\n\n"
+        L"<a href=\"" + std::wstring(kRepoUrl) + L"\">" + kRepoUrl + L"</a>";
+
+    TASKDIALOGCONFIG config = { sizeof(config) };
+    config.hwndParent = dlg;
+    config.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    config.dwCommonButtons = TDCBF_OK_BUTTON;
+    config.pszWindowTitle = L"About HashCalc";
+    config.pszMainIcon = TD_INFORMATION_ICON;
+    config.pszMainInstruction = L"HashCalc " VERSION_STR;
+    config.pszContent = content.c_str();
+    config.pfCallback = AboutCallback;
+    TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
 }
 
 void OnToggleShellIntegration(HWND dlg)
