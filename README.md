@@ -25,6 +25,7 @@ So I made my own version. It grew from my old hash code, which was command line 
 - **Compact window:** small tick boxes on top, and one results list below that only shows the hashes you ticked.
 - **HMAC** with a text or hex key.
 - **Files, text or hex** as input. You can also drag and drop a file onto the window.
+- **Drag the window from anywhere,** even from a button, tick box or list. A normal click still works. An edit box with text in it selects the text instead.
 - **Fast:** each hash runs on its own thread. A small bar and a percentage show the progress.
 - **Copy** one result with its copy button (or double-click, or Ctrl+C), or everything with **Copy All**.
 - **Check on VirusTotal:** the shield button next to the MD5, SHA1 and SHA256 results opens the VirusTotal report for that hash in your browser. Only the hash is sent, not the file. It is off for HMAC results, because those depend on your key.

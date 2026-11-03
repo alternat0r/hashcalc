@@ -1,7 +1,9 @@
 #include "common/Util.h"
 
+#include <commctrl.h>
 #include <shobjidl.h>
 
+#include <cstdlib>
 #include <cwchar>
 #include <cwctype>
 
@@ -160,6 +162,83 @@ INT_PTR DragAnywhereHitTest(HWND dlg, WPARAM wParam, LPARAM lParam)
         return FALSE;
     SetWindowLongPtrW(dlg, DWLP_MSGRESULT, HTCAPTION);
     return TRUE;
+}
+
+namespace
+{
+std::vector<HWND> g_dragDialogs;
+HWND g_pressedControl = nullptr;
+POINT g_pressPoint = {};
+
+// The dialog a press on this control would drag, or null if the control keeps
+// its own dragging: a list header resizes columns, a filled edit box selects text.
+HWND DragDialogOf(HWND control)
+{
+    HWND root = GetAncestor(control, GA_ROOT);
+    if (root == control || IsZoomed(root))
+        return nullptr;
+    bool found = false;
+    for (HWND dialog : g_dragDialogs)
+        found = found || dialog == root;
+    if (!found)
+        return nullptr;
+
+    wchar_t className[32] = {};
+    GetClassNameW(control, className, ARRAYSIZE(className));
+    if (_wcsicmp(className, WC_HEADERW) == 0)
+        return nullptr;
+    if (_wcsicmp(className, L"Edit") == 0 && GetWindowTextLengthW(control) > 0)
+        return nullptr;
+    return root;
+}
+
+// A thread hook, because list views read the mouse in a loop of their own and
+// never return to the message loop during a press.
+LRESULT CALLBACK DragMouseHook(int code, WPARAM wParam, LPARAM lParam)
+{
+    if (code >= 0)
+    {
+        const POINT pt = reinterpret_cast<MOUSEHOOKSTRUCT*>(lParam)->pt;
+        HWND target = reinterpret_cast<MOUSEHOOKSTRUCT*>(lParam)->hwnd;
+        if (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONDBLCLK)
+        {
+            g_pressedControl = DragDialogOf(target) ? target : nullptr;
+            g_pressPoint = pt;
+        }
+        else if (wParam == WM_LBUTTONUP || (GetKeyState(VK_LBUTTON) & 0x8000) == 0)
+        {
+            g_pressedControl = nullptr;
+        }
+        else if (wParam == WM_MOUSEMOVE && g_pressedControl &&
+            (abs(pt.x - g_pressPoint.x) > GetSystemMetrics(SM_CXDRAG) ||
+             abs(pt.y - g_pressPoint.y) > GetSystemMetrics(SM_CYDRAG)))
+        {
+            HWND control = g_pressedControl;
+            g_pressedControl = nullptr;
+            if (HWND dialog = DragDialogOf(control))
+            {
+                // Taking the mouse away cancels the press, so no click follows.
+                if (SendMessageW(control, CB_GETDROPPEDSTATE, 0, 0))
+                    SendMessageW(control, CB_SHOWDROPDOWN, FALSE, 0);
+                ReleaseCapture();
+                PostMessageW(dialog, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(g_pressPoint.x, g_pressPoint.y));
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+}
+
+void EnableDragFromControls(HWND dlg)
+{
+    static HHOOK hook = SetWindowsHookExW(WH_MOUSE, DragMouseHook, nullptr, GetCurrentThreadId());
+    (void)hook;
+    std::vector<HWND> open;
+    for (HWND dialog : g_dragDialogs)
+        if (IsWindow(dialog))
+            open.push_back(dialog);
+    open.push_back(dlg);
+    g_dragDialogs = open;
 }
 
 void AnchorLayout::Capture(HWND dlg)

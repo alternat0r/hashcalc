@@ -1408,7 +1408,11 @@ INT_PTR CALLBACK PathSetupProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_INITDIALOG:
         SetWindowLongPtrW(dlg, GWLP_USERDATA, lParam);
         SetDlgItemTextW(dlg, IDC_P_FOLDER, reinterpret_cast<std::wstring*>(lParam)->c_str());
+        EnableDragFromControls(dlg);
         return TRUE;
+
+    case WM_NCHITTEST:
+        return DragAnywhereHitTest(dlg, wParam, lParam);
 
     case WM_COMMAND:
     {
@@ -1598,6 +1602,7 @@ void OnInitDialog(HWND dlg)
     g_dlg = dlg;
     SetPropW(dlg, kInstanceProp, reinterpret_cast<HANDLE>(1));   // found by Single Instance launches
     SetWindowTextW(dlg, L"HashCalc " VERSION_STR);
+    EnableDragFromControls(dlg);
 
     HINSTANCE instance = GetModuleHandleW(nullptr);
     HICON bigIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));

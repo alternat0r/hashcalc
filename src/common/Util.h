@@ -33,6 +33,11 @@ bool BrowseForFolder(HWND owner, std::wstring& folder, const wchar_t* title = L"
 // dragged from anywhere. Returns TRUE if it set the result.
 INT_PTR DragAnywhereHitTest(HWND dlg, WPARAM wParam, LPARAM lParam);
 
+// Lets the controls of this dialog drag it too: pressing a control and moving
+// the mouse moves the window, and a press without moving is still a normal click.
+// Call it from WM_INITDIALOG.
+void EnableDragFromControls(HWND dlg);
+
 // Spreadsheets run cells that start with = + - @ as formulas (CSV injection).
 // Returns the text with a leading apostrophe in that case, so it stays text.
 std::wstring SpreadsheetText(const std::wstring& text);

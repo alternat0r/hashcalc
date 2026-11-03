@@ -492,6 +492,7 @@ void CaptureLayout(FolderWindow& w)
 
 void OnInitDialog(FolderWindow& w)
 {
+    EnableDragFromControls(w.dlg);
     HICON icon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
     HICON bigIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP));
